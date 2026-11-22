@@ -1198,7 +1198,6 @@ PlasmoidItem {
                     Timer {
                         id: volHide
                         interval: 900
-                        repeat: false
                         onTriggered: volOverlay.opacity = 0
                     }
                 }
