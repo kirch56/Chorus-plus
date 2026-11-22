@@ -92,5 +92,12 @@
     <entry name="apiUrl" type="String">
       <default>http://127.0.0.1:26538</default>
     </entry>
+    <entry name="extraProviders" type="StringList">
+      <default>betterlyrics</default>
+      <default>unison</default>
+      <default>lyricsplus</default>
+      <default>kugou</default>
+      <default>youtube</default>
+    </entry>
   </group>
 </kcfg>

@@ -18,6 +18,7 @@ KCM.SimpleKCM {
     property alias cfg_hideWhenIdle: hideIdleCheck.checked
     property alias cfg_showVolumeBar: volumeCheck.checked
     property int cfg_lyricsOffsetMs
+    property var cfg_extraProviders: []
 
     property var fontDialog: null
     property var colorButton: null
@@ -25,6 +26,22 @@ KCM.SimpleKCM {
     readonly property int maxFallbacks: 5
     property var fontDialogField: null
     property int nextUid: 1
+
+    // Extra lyrics providers, shown as checkboxes and stored as a StringList.
+    readonly property var providerIds: ["betterlyrics", "unison", "lyricsplus", "kugou", "youtube"]
+    readonly property var providerNames: ["Better Lyrics", "Unison", "LyricsPlus", "KuGou", "YouTube Music"]
+
+    function providerEnabled(pid) {
+        var arr = cfg_extraProviders || [];
+        return arr.indexOf(pid) !== -1;
+    }
+    function setProviderEnabled(pid, on) {
+        var arr = (cfg_extraProviders || []).slice();
+        var i = arr.indexOf(pid);
+        if (on && i === -1) arr.push(pid);
+        if (!on && i !== -1) arr.splice(i, 1);
+        cfg_extraProviders = arr;
+    }
 
     ListModel { id: fallbackModel }
 
@@ -260,6 +277,26 @@ KCM.SimpleKCM {
             opacity: 0.7
             wrapMode: Text.WordWrap
             Layout.fillWidth: true
+        }
+
+        Item { Kirigami.FormData.isSection: true }
+
+        QQC2.Label {
+            Kirigami.FormData.label: i18n("Lyrics providers:")
+            text: i18n("Fallback sources tried in order when LRCLIB has no synced lyrics:")
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+        Repeater {
+            model: page.providerIds.length
+            delegate: QQC2.CheckBox {
+                readonly property string pid: page.providerIds[index]
+                text: page.providerNames[index]
+                Component.onCompleted: checked = page.providerEnabled(pid)
+                onToggled: page.setProviderEnabled(pid, checked)
+            }
         }
     }
 

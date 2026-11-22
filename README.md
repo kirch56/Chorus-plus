@@ -47,11 +47,11 @@ https://github.com/user-attachments/assets/aff481a7-01e9-43f6-9053-7931b17a784e
 
 ## Features
 
-- **Synced lyrics** from [LRCLIB](https://lrclib.net), a free and open-source lyrics library.
+- **Synced lyrics** from [LRCLIB](https://lrclib.net), a free and open-source lyrics library, with **five fallback providers**: Better Lyrics, Unison, LyricsPlus, KuGou and YouTube Music.
 - Works with **any media player**: Spotify, YouTube Music, VLC, etc.
 - Album cover, current lyric, playback controls, seek bar, shuffle/repeat, volume slider.
 - Custom font with **multiple font** support, colors, width, font scale and other **customisation** features.
-- **In-widget music search** via YouTube Music or Spotify. See [SETUP.md](SETUP.md).
+- In-widget music search via YouTube Music or Spotify. See [SETUP.md](SETUP.md).
 - Horizontal **and** vertical panels; content rotates to read along the panel.
 
 ## Manual Install
@@ -75,10 +75,16 @@ kpackagetool6 -t Plasma/Applet -u chorus.plasmoid
 
 ## Lyrics
 
-Lyrics come from [LRCLIB](https://lrclib.net), a free and open-source lyrics library.
+Synced lyrics come from [LRCLIB](https://lrclib.net), a free and open-source lyrics library. If LRCLIB has no synced lyrics for a song, the widget tries the extra providers below, in this order — each one can be toggled in the widget settings under **Look & Feel → Lyrics providers**:
+
+1. **Better Lyrics** — the [Better Lyrics API](https://api.betterlyrics.org)
+2. **Unison** — community-submitted synced lyrics at [unison.betterlyrics.org](https://unison.betterlyrics.org); the submitter is credited in the widget log
+3. **LyricsPlus** — the [LyricsPlus](https://github.com/ibratabian17/lyricsplus) aggregator (Apple Music, QQ, Musixmatch and more)
+4. **KuGou** — the [KuGou](https://www.kugou.com) lyrics library, great for CJK songs
+5. **YouTube Music** — timed captions from YouTube's InnerTube API; YouTube blocks some networks entirely, so this one may be unavailable depending on where you are
 
 > [!NOTE]  
-> If lines feel early or late (e.g. Bluetooth or other latency), adjust **Lyrics timing offset** at the bottom of `Look & Feel`. Positive values show lines earlier; +500 works great for me. Sync quality can also vary from song to song; the timings are community-made, so an occasional desynced song is due to the source data, not your setup. Some songs simply have no synced lyrics on LRCLIB; the widget falls back to title/artist.
+> If lines feel early or late (e.g. Bluetooth or other latency), adjust **Lyrics timing offset** at the bottom of `Look & Feel`. Positive values show lines earlier; +500 works great for me. Sync quality can also vary from song to song; the timings are community-made, so an occasional desynced song is due to the source data, not your setup. Some songs simply have no synced lyrics on any of the sources; the widget falls back to title/artist.
 
 ## Donations
 
