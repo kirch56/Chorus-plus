@@ -9,6 +9,7 @@ import org.kde.kirigami as Kirigami
 import org.kde.plasma.private.mpris as Mpris
 import org.kde.plasma.plasma5support as P5Support
 import "../code/lrc.js" as Lrc
+import "../code/providers.js" as Providers
 
 PlasmoidItem {
     id: root
@@ -304,7 +305,7 @@ PlasmoidItem {
         }
     }
 
-    function httpGet(url, cb) {
+    function httpGet(url, cb, headers) {
         var xhr = new XMLHttpRequest();
         var done = false;
         function finish(ok, body) {
@@ -320,8 +321,32 @@ PlasmoidItem {
         xhr.timeout = 10000;
         xhr.ontimeout = function () { finish(false, ""); };
         xhr.open("GET", url);
-        xhr.setRequestHeader("Lrclib-Client", "Chorus/1.0 (Plasma widget)");
+        if (headers) {
+            for (var h in headers) xhr.setRequestHeader(h, headers[h]);
+        } else {
+            xhr.setRequestHeader("Lrclib-Client", "Chorus/1.0 (Plasma widget)");
+        }
         xhr.send();
+    }
+
+    function httpPostJson(url, body, cb) {
+        var xhr = new XMLHttpRequest();
+        var done = false;
+        function finish(ok, resp) {
+            if (done)
+                return;
+            done = true;
+            cb(ok, resp);
+        }
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState === XMLHttpRequest.DONE)
+                finish(xhr.status === 200, xhr.responseText);
+        };
+        xhr.timeout = 10000;
+        xhr.ontimeout = function () { finish(false, ""); };
+        xhr.open("POST", url);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.send(body);
     }
 
     function rememberCache(key, val) {
@@ -363,7 +388,6 @@ PlasmoidItem {
                              + "&artist_name=" + encodeURIComponent(root.trackArtist),
                     function (ok2, resp2) {
                         if (root.songKey !== key) return;
-                        root.fetching = false;
                         var s2 = null;
                         if (ok2) {
                             try {
@@ -373,10 +397,37 @@ PlasmoidItem {
                                 }
                             } catch (e) {}
                         }
-                        root.rememberCache(key, s2);
-                        root.applyLyrics(s2);
+                        if (s2) {
+                            root.fetching = false;
+                            root.rememberCache(key, s2);
+                            root.applyLyrics(s2);
+                        } else {
+                            root.fetchExtraProviders(key, durS);
+                        }
                     });
             }
+        });
+    }
+
+    // Extra lyrics providers (Better Lyrics, Unison, LyricsPlus, KuGou, YouTube
+    // Music), tried in order when LRCLIB has no synced lyrics.
+    function fetchExtraProviders(key, durS) {
+        var ctx = {
+            title: trackTitle,
+            artist: trackArtist,
+            album: trackAlbum,
+            durS: durS,
+            enabled: Plasmoid.configuration.extraProviders || [],
+            httpGet: httpGet,
+            httpPostJson: httpPostJson,
+            isStale: function () { return root.songKey !== key; },
+            log: function (msg) { console.log("[chorus] " + msg); }
+        };
+        Providers.fetchAll(ctx, function (lrc) {
+            if (root.songKey !== key) return;
+            root.fetching = false;
+            root.rememberCache(key, lrc);
+            root.applyLyrics(lrc);
         });
     }
 
@@ -1147,6 +1198,7 @@ PlasmoidItem {
                     Timer {
                         id: volHide
                         interval: 900
+                        repeat: false
                         onTriggered: volOverlay.opacity = 0
                     }
                 }
