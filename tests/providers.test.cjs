@@ -5,10 +5,18 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const providerPath = path.join(__dirname, "..", "Chorus", "contents", "code", "providers.js");
-const source = fs.readFileSync(providerPath, "utf8")
-    .split("\n").filter(line => !line.startsWith(".pragma") && !line.startsWith(".import")).join("\n");
-const sandbox = vm.createContext({});
-new vm.Script(source, { filename: "providers.js" }).runInContext(sandbox);
+const lrcPath = path.join(__dirname, "..", "Chorus", "contents", "code", "lrc.js");
+const stripQmlDirectives = source => source.split("\\n")
+    .filter(line => !line.startsWith(".pragma") && !line.startsWith(".import"))
+    .join("\\n");
+const lrcSandbox = vm.createContext({});
+new vm.Script(stripQmlDirectives(fs.readFileSync(lrcPath, "utf8")),
+    { filename: "lrc.js" }).runInContext(lrcSandbox);
+const sandbox = vm.createContext({
+    Lrc: { finalizeLines: lrcSandbox.finalizeLines }
+});
+new vm.Script(stripQmlDirectives(fs.readFileSync(providerPath, "utf8")),
+    { filename: "providers.js" }).runInContext(sandbox);
 
 const remixContext = {
     title: "Heads Will Roll - A-Trak Remix",
@@ -155,4 +163,47 @@ test("reads provider track metadata without substituting the player's duration",
         sandbox.providerTrackInfo({ track: { title: "Remix", length: 383000 } }).duration,
         383
     );
+});
+
+test("SyncLRC TTML removes background, translation and romanization tracks", () => {
+    const ttml = `<tt xmlns="http://www.w3.org/ns/ttml"
+        xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+      <body><div><p begin="00:00:01.000" end="00:00:03.000">
+        <span begin="00:00:01.000" end="00:00:01.200">I</span>
+        <span begin="00:00:01.200" end="00:00:01.500">don't</span>
+        <span begin="00:00:01.500" end="00:00:01.800">want</span>
+        <span begin="00:00:01.800" end="00:00:02.000">this</span>
+        <span ttm:role="x-bg"><span begin="00:00:02.100">中文背景歌词</span></span>
+        <span ttm:role="x-translation"><span begin="00:00:02.200">中文翻译</span></span>
+        <span ttm:role="x-roman"><span begin="00:00:02.300">zhong wen fan yi</span></span>
+      </p></div></body>
+    </tt>`;
+    const song = sandbox.ttmlToSong(ttml);
+    assert.ok(song);
+    assert.equal(song.lines.length, 1);
+    assert.equal(song.lines[0].text, "I don't want this");
+    assert.equal(song.wordSync, true);
+    assert.equal(song.lines[0].words.map(word => word.text).join(""), "I don't want this");
+});
+
+test("SyncLRC adjacent timed English words get spaces without splitting contractions", () => {
+    const ttml = `<tt xmlns="http://www.w3.org/ns/ttml">
+      <body><div><p begin="00:00:01.000" end="00:00:04.000">
+        <span begin="00:00:01.000">Don't</span><span begin="00:00:01.300">stop</span><span begin="00:00:01.600">me</span><span begin="00:00:01.800">now!</span>
+      </p></div></body>
+    </tt>`;
+    const song = sandbox.ttmlToSong(ttml);
+    assert.ok(song);
+    assert.equal(song.lines[0].text, "Don't stop me now!");
+    assert.equal(song.wordSync, true);
+});
+
+test("SyncLRC provider requests structured TTML rather than flattened LRC", () => {
+    const providerSource = fs.readFileSync(providerPath, "utf8");
+    const start = providerSource.indexOf("function fetchSyncLRC");
+    const end = providerSource.indexOf("// SyncLyrics API exposes", start);
+    assert.ok(start >= 0 && end > start);
+    const adapter = providerSource.slice(start, end);
+    assert.match(adapter, /type=karaoke&format=ttml/);
+    assert.match(adapter, /ttmlToSong\\(unwrapTtml\\(ttml\\)\\)/);
 });
