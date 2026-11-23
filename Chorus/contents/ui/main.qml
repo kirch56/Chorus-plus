@@ -1152,13 +1152,15 @@ PlasmoidItem {
             }
         }
 
-        MouseArea {
-            anchors.fill: parent
+        TapHandler {
+            acceptedButtons: Qt.LeftButton
             enabled: !rowItem.isBreak && rowItem.line && root.playerMatches
                      && root.player && root.player.canSeek
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-                if (rowItem.view) rowItem.view.following = true;
+            onTapped: {
+                if (rowItem.view) {
+                    rowItem.view.following = true;
+                    rowItem.view.requestFollow(true);
+                }
                 root.seekToMs(rowItem.line.t);
             }
         }
@@ -1480,14 +1482,23 @@ PlasmoidItem {
             // Flickable/ListView have no onWheel signal — a WheelHandler
             // scrolls the view itself and tells us a real wheel event came.
             WheelHandler {
-                // Observe wheel input only. A default WheelHandler target is
-                // the ListView itself and can consume wheel events without
-                // changing contentY, preventing Flickable's native scrolling.
+                // Handle wheel input explicitly. This is more reliable than
+                // hoping the event propagates through the delegate to Flickable.
                 target: null
+                blocking: false
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 onWheel: function (event) {
+                    var delta = event.pixelDelta.y !== 0
+                            ? event.pixelDelta.y
+                            : event.angleDelta.y / 120 * Kirigami.Units.gridUnit * 3;
+                    var maxY = Math.max(0, lv.contentHeight - lv.height);
+                    if (maxY <= 0 || delta === 0) {
+                        event.accepted = false;
+                        return;
+                    }
                     ts.browse();
-                    event.accepted = false;
+                    lv.contentY = Math.max(0, Math.min(maxY, lv.contentY - delta));
+                    event.accepted = true;
                 }
             }
         }

@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 
 const providerPath = path.join(__dirname, "..", "Chorus", "contents", "code", "providers.js");
 const source = fs.readFileSync(providerPath, "utf8")
-    .replace(/^\.(?:pragma|import)\b.*$/gm, "");
+    .replace(/^\\.(?:pragma|import)\\b.*$/gm, "");
 const sandbox = vm.createContext({});
 new vm.Script(source, { filename: "providers.js" }).runInContext(sandbox);
 
@@ -18,10 +18,7 @@ const remixContext = {
 
 test("normalizes punctuation without discarding remix identity", () => {
     assert.equal(
-        sandbox.dmsTitlesEquivalent(
-            remixContext.title,
-            "Heads Will Roll (A-Trak Remix)"
-        ),
+        sandbox.dmsTitlesEquivalent(remixContext.title, "Heads Will Roll (A-Trak Remix)"),
         true
     );
     assert.equal(
@@ -33,33 +30,19 @@ test("normalizes punctuation without discarding remix identity", () => {
     );
 });
 
-test("rejects the original and radio edit for an A-Trak Remix request", () => {
+test("selects the A-Trak Remix rather than the original or radio edit", () => {
     const hits = [
-        {
-            isrc: "original",
-            title: "Heads Will Roll",
-            artist: "Yeah Yeah Yeahs",
-            duration: 220
-        },
-        {
-            isrc: "radio-edit",
-            title: "Heads Will Roll (A-Trak Remix Radio Edit)",
-            artist: "Yeah Yeah Yeahs",
-            duration: 202
-        },
-        {
-            isrc: "a-trak-remix",
-            title: "Heads Will Roll (A-Trak Remix)",
-            artist: "Yeah Yeah Yeahs",
-            duration: 383
-        }
+        { isrc: "original", title: "Heads Will Roll", artist: "Yeah Yeah Yeahs", duration: 220 },
+        { isrc: "radio-edit", title: "Heads Will Roll (A-Trak Remix Radio Edit)",
+          artist: "Yeah Yeah Yeahs", duration: 202 },
+        { isrc: "a-trak-remix", title: "Heads Will Roll (A-Trak Remix)",
+          artist: "Yeah Yeah Yeahs", duration: 383 }
     ];
-
     const selected = sandbox.lrcRedChooseHit(hits, remixContext);
     assert.equal(selected && selected.isrc, "a-trak-remix");
 });
 
-test("rejects source lyrics from a different recording duration", () => {
+test("rejects the original recording when a remix is requested", () => {
     const song = {
         lines: [{ t: 0, e: 1000, text: "Dance" }],
         matchTitle: "Heads Will Roll",
@@ -68,11 +51,21 @@ test("rejects source lyrics from a different recording duration", () => {
     };
     assert.equal(
         sandbox.dmsMetadataProblem(remixContext, song),
-        "duration mismatch"
+        "track/version mismatch"
     );
 });
 
-test("rejects a base-title result when a remix is requested and duration is unknown", () => {
+test("accepts the exact remix title even if the provider duration is rounded", () => {
+    const song = {
+        lines: [{ t: 0, e: 1000, text: "Dance" }],
+        matchTitle: "Heads Will Roll (A-Trak Remix)",
+        matchArtist: "Yeah Yeah Yeahs",
+        durMs: 379000
+    };
+    assert.equal(sandbox.dmsMetadataProblem(remixContext, song), "");
+});
+
+test("rejects a base-title result when remix duration is not verified", () => {
     const song = {
         lines: [{ t: 0, e: 1000, text: "Dance" }],
         matchTitle: "Heads Will Roll",
@@ -85,7 +78,7 @@ test("rejects a base-title result when a remix is requested and duration is unkn
     );
 });
 
-test("does not invent a source duration when the player has no duration yet", () => {
+test("accepts an exact remix title when the player has not reported duration yet", () => {
     const song = {
         lines: [{ t: 0, e: 1000, text: "Dance" }],
         matchTitle: "Heads Will Roll (A-Trak Remix)",
@@ -98,7 +91,7 @@ test("does not invent a source duration when the player has no duration yet", ()
     );
 });
 
-test("requires edition metadata when neither source nor player can verify a remix", () => {
+test("requires positive version evidence when neither source title nor duration identifies the remix", () => {
     const song = {
         lines: [{ t: 0, e: 1000, text: "Dance" }],
         durMs: 0
@@ -109,7 +102,43 @@ test("requires edition metadata when neither source nor player can verify a remi
     );
 });
 
-test("reads real track metadata without substituting the player's duration", () => {
+test("does not reject ordinary tracks when providers omit title or duration", () => {
+    const context = { title: "DOPAMINE HIT", artist: "ALRT", durS: 175 };
+    const song = {
+        lines: [{ t: 0, e: 1000, text: "Dopamine hit" }],
+        wordSync: true,
+        durMs: 0
+    };
+    assert.equal(sandbox.dmsMetadataProblem(context, song), "");
+});
+
+test("keeps a lyrics result in the provider race when ordinary metadata is missing", () => {
+    const context = {
+        title: "DOPAMINE HIT",
+        artist: "ALRT",
+        durS: 175,
+        log: () => {}
+    };
+    const song = {
+        lines: [{ t: 0, e: 1000, text: "Dopamine hit" }],
+        wordSync: true,
+        durMs: 0
+    };
+    assert.equal(sandbox.dmsPick(context, [song]), song);
+});
+
+test("does not reject ordinary tracks for a provider duration discrepancy", () => {
+    const context = { title: "DOPAMINE HIT", artist: "ALRT", durS: 175 };
+    const song = {
+        lines: [{ t: 0, e: 1000, text: "Dopamine hit" }],
+        matchTitle: "DOPAMINE HIT",
+        matchArtist: "ALRT",
+        durMs: 170000
+    };
+    assert.equal(sandbox.dmsMetadataProblem(context, song), "");
+});
+
+test("reads provider track metadata without substituting the player's duration", () => {
     assert.deepEqual(
         JSON.parse(JSON.stringify(sandbox.providerTrackInfo({
             track: "Heads Will Roll (A-Trak Remix)",
