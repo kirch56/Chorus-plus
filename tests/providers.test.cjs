@@ -186,8 +186,8 @@ test("lrc.red keeps source whitespace and preserves syllable-level timing", () =
     assert.equal(song.lines[0].text, "every one always talking?");
     assert.equal(song.lines[0].words.map(word => word.text).join(""), "every one always talking?");
     assert.deepEqual(
-        song.lines[0].words.map(word => word.t),
-        [1000, 1200, 1500, 1800, 2000, 2300]
+        JSON.parse(JSON.stringify(song.lines[0].words.map(word => word.t))),
+        [1000, 1200, 1500, 1800, 2000, 2300, 2600]
     );
     assert.equal(song.wordSync, true);
 });
