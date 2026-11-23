@@ -1,0 +1,89 @@
+name: Build and publish Plasma package
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'Chorus/**'
+      - '.github/workflows/release-plasmoid.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'kirch56/Chorus-plus'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Read package version
+        id: meta
+        shell: bash
+        run: |
+          version="$(jq -r '.KPlugin.Version' Chorus/metadata.json)"
+          if [[ -z "$version" || "$version" == "null" ]]; then
+            echo "Could not read KPlugin.Version from Chorus/metadata.json" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Skip an already published version
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        shell: bash
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists; nothing to publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package Plasma applet
+        if: steps.exists.outputs.exists != 'true'
+        shell: bash
+        run: |
+          artifact="chorus-plus-v${{ steps.meta.outputs.version }}.plasmoid"
+          (cd Chorus && zip -qr "../$artifact" .)
+          unzip -tq "$artifact"
+          unzip -Z1 "$artifact" | grep -qx 'metadata.json'
+          unzip -Z1 "$artifact" | grep -qx 'contents/code/providers.js'
+
+      - name: Create GitHub release and attach package
+        if: steps.exists.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ARTIFACT: chorus-plus-v${{ steps.meta.outputs.version }}.plasmoid
+        shell: bash
+        run: |
+          notes_file="$(mktemp)"
+          cat > "$notes_file" <<EOF
+# Chorus Plus v${VERSION}
+
+Adds nine new lyrics sources to the existing parallel lookup. Chorus now races 15 providers and prefers valid word- or syllable-synced timings when available.
+
+New sources: LRCMux, LiriQo, Lyrica, SyncLRC, SyncLyrics API, AMLL TTML DB, lrc.red, LyricsDB and Karalyr.
+
+## Install / update
+
+```sh
+kpackagetool6 --type Plasma/Applet -u ${ARTIFACT}
+systemctl --user restart plasma-plasmashell.service
+```
+
+Use `-i` instead of `-u` for a first install.
+EOF
+          gh release create "$TAG" "$ARTIFACT" \
+            --title "Chorus Plus v${VERSION}" \
+            --notes-file "$notes_file" \
+            --target "$GITHUB_SHA"
