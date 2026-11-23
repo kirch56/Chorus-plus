@@ -325,7 +325,7 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: i18n("Popup height:")
             from: 10; to: 40; stepSize: 1
             editable: true
-            textFromValue: function (v) { return i18n("%1 grid units").arg(v) }
+            textFromValue: function (v) { return i18n("%1 grid units", v) }
             valueFromText: function (t) { return parseInt(t) || 15 }
             Component.onCompleted: value = Math.max(10, Math.min(40, page.cfg_popupHeroH || 15))
         }

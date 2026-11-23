@@ -767,6 +767,11 @@ function dmsPick(ctx, results) {
     var band = Math.max(DMS_MIN_AGREE_BAND_MS, (ctx.durS > 0 ? ctx.durS * 1000 : 0) * DMS_AGREE_BAND_SHARE);
     function better(x, y) {
         if (x.plausible !== y.plausible) return x.plausible ? x : y;
+        // word-level sweep beats line-level sync whenever both are plausible:
+        // the karaoke view stays alive when a word source answers (DMS keeps
+        // the same preference in its provider ordering)
+        var xw = x.song.wordSync === true, yw = y.song.wordSync === true;
+        if (xw !== yw) return xw ? x : y;
         if (x.timed !== y.timed) return x.timed ? x : y;
         if (x.verified !== y.verified) return x.verified ? x : y;
         var bx = Math.floor(x.nearest / band), by = Math.floor(y.nearest / band);

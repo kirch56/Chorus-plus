@@ -475,10 +475,12 @@ PlasmoidItem {
 
     function applyLyrics(song) {
         if (song && song.lines) {
-            lines = song.lines;
-            wordSync = song.wordSync === true;
+            // credit first: the transcript reserves its space before the
+            // items land, so the fit pass sees the final list height
             songSource = song.providerName || "";
+            wordSync = song.wordSync === true;
             songInstrumental = song.instrumental === true;
+            lines = song.lines;
             // DMS: a line moves into the centre over a share of the time since
             // the line before it, so the view paces itself to the song
             for (var i = 0; i < lines.length; i++) {
@@ -1021,8 +1023,16 @@ PlasmoidItem {
             return Math.max(0, Math.min(1, e / last));
         }
 
+        // maxWidth clamps a rendered row to the view width: when the real
+        // render (RichText spans run a few px wider than the TextMetrics
+        // estimator) overflows, the row scales down around its centre
+        // instead of clipping at the popup edges
+        property real maxWidth: 0
         width: glyphText.implicitWidth
         height: Math.ceil(fontPx * 1.45)
+        scale: maxWidth > 0 && glyphText.implicitWidth > maxWidth
+               ? maxWidth / glyphText.implicitWidth : 1
+        transformOrigin: Item.Center
 
         Text {
             id: glyphText
@@ -1094,7 +1104,7 @@ PlasmoidItem {
             rows = Lrc.partRows({ text: line.text,
                                   words: root.lineWords(modelData.line),
                                   t: line.t, e: line.e },
-                                width, function (s) {
+                                view.wrapW, function (s) {
                                     measure.text = s;
                                     return measure.advanceWidth;
                                 });
@@ -1125,6 +1135,7 @@ PlasmoidItem {
                 required property var modelData
                 required property int index
 
+                maxWidth: rowItem.width
                 x: Math.round((rowItem.width - width) / 2)
                 y: rowItem.pad + index * rowItem.rowH
                 text: modelData.text
@@ -1168,11 +1179,22 @@ PlasmoidItem {
         property bool fitAll: false
         readonly property real leadPx: ts.fitPx > 0 ? Math.round(ts.fitPx) : ts.basePx
         readonly property real breakSize: Math.round(leadPx * 1.2)
+        // Wrap rows a little narrower than the view: real Text rendering
+        // (RichText spans) measures a few px wider than the TextMetrics the
+        // estimator uses, and a row packed to the exact view width clips at
+        // the popup edges
+        readonly property real wrapW: ts.width > 0
+            ? ts.width - Math.max(6, Math.round(ts.width * 0.02)) : 0
+        // the lyrics-provider credit pinned under the transcript (DMS shows
+        // an attributionName; pinned keeps it visible while scrolling). Its
+        // height is reserved, so follow-centring and the fit budget both
+        // account for it.
+        readonly property real creditH: attrLabel.height
         // DMS half-view padding centres the active row while scrolling; once
         // the whole transcript fits, small pads keep every line on screen
         readonly property real endPadding: ts.fitAll
             ? Math.round(Kirigami.Units.gridUnit * 0.5)
-            : Math.max(0, ts.height / 2
+            : Math.max(0, lv.height / 2
                 - (ts.leadPx * 1.45 + Kirigami.Units.smallSpacing * 2) / 2)
         property bool following: true
         property int centre: -1
@@ -1203,12 +1225,14 @@ PlasmoidItem {
         // The cost model mirrors LyricRow's real layout via the same
         // measure/Lrc.partRows pipeline itemHeightAt uses.
         function fitBudget() {
-            // everything-visible budget: the small top pad endPadding uses in
-            // fit mode (half a grid unit), the real footer height (the lyrics
-            // credit lives there), and a rounding margin for estimate drift
-            var footerH = Math.max(Math.round(Kirigami.Units.gridUnit * 0.5),
-                                   attrText.implicitHeight + Kirigami.Units.gridUnit);
-            return ts.height - Math.round(Kirigami.Units.gridUnit * 0.5) - footerH - 6;
+            // everything-visible budget: the pinned credit under the list and
+            // the small pad endPadding uses in fit mode, plus a rounding
+            // margin for estimate drift. attrLabel is a direct child of this
+            // component, so the id resolves here — a footer's inner ids do
+            // not, and referencing one silently kills the fit (the v2.15.0
+            // regression).
+            return ts.height - ts.creditH
+                   - Math.round(Kirigami.Units.gridUnit * 0.5) - 6;
         }
         function fitCost(px) {
             var total = 0;
@@ -1228,7 +1252,7 @@ PlasmoidItem {
                 measure.font.pixelSize = fpx;
                 measure.font.weight = promoted ? Font.Bold : Font.DemiBold;
                 var rows = Lrc.partRows({ text: line.text, words: root.lineWords(it.line),
-                                          t: line.t, e: line.e }, ts.width, function (s) {
+                                          t: line.t, e: line.e }, ts.wrapW, function (s) {
                     measure.text = s;
                     return measure.advanceWidth;
                 });
@@ -1244,8 +1268,11 @@ PlasmoidItem {
                 return;
             }
             var fs = Number(Plasmoid.configuration.fontScale) || 1.0;
-            var lo = Math.max(9, Math.round(Kirigami.Units.gridUnit * 0.6 * fs));
-            var hi = Math.max(lo + 1, Math.round(ts.basePx * fs));
+            var hi = Math.max(10, Math.round(ts.basePx * fs));
+            // readable floor: cramming below 70% of the DMS lead size makes
+            // long transcripts tiny — once even that cannot fit, the view
+            // scrolls at the floor size instead of shrinking into a squint
+            var lo = Math.max(9, Math.round(hi * 0.7));
             var budget = ts.fitBudget();
             var px = lo;
             var all = false;
@@ -1285,7 +1312,7 @@ PlasmoidItem {
             measure.font.pixelSize = fontPx;
             measure.font.weight = promoted ? Font.Bold : Font.DemiBold;
             var rows = Lrc.partRows({ text: line.text, words: root.lineWords(it.line),
-                                      t: line.t, e: line.e }, ts.width, function (s) {
+                                      t: line.t, e: line.e }, ts.wrapW, function (s) {
                 measure.text = s;
                 return measure.advanceWidth;
             });
@@ -1314,7 +1341,7 @@ PlasmoidItem {
                 for (var j = centre; j < anchor.index; j++)
                     y -= rowHeightAt(j) + lv.spacing;
             }
-            return Math.max(0, y + rowHeightAt(centre) / 2 - ts.height / 2);
+            return Math.max(0, y + rowHeightAt(centre) / 2 - lv.height / 2);
         }
 
         function requestFollow(animate) {
@@ -1403,7 +1430,10 @@ PlasmoidItem {
 
         ListView {
             id: lv
-            anchors.fill: parent
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: attrLabel.top
             clip: true
             reuseItems: true
             cacheBuffer: Math.max(0, Math.round(ts.height))
@@ -1411,23 +1441,7 @@ PlasmoidItem {
             boundsBehavior: Flickable.StopAtBounds
             model: ts.items
             header: Item { width: lv.width; height: ts.endPadding }
-            footer: Item {
-                width: lv.width
-                height: Math.max(ts.endPadding, attrText.implicitHeight + Kirigami.Units.gridUnit)
-                Text {
-                    id: attrText
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.top: parent.top
-                    anchors.topMargin: Kirigami.Units.smallSpacing
-                    visible: root.songSource !== ""
-                    textFormat: Text.PlainText
-                    text: root.songSource
-                    color: root.cActive
-                    opacity: 0.35
-                    font.family: root.cfgFont
-                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                }
-            }
+            footer: Item { width: lv.width; height: ts.endPadding }
             delegate: LyricRow {
                 view: ts
             }
@@ -1443,6 +1457,31 @@ PlasmoidItem {
                 onWheel: ts.browse()
             }
         }
+
+        // Pinned lyrics-provider credit (DMS attributionName, e.g. "Lyrics
+        // from LRCLIB"), styled like DMS's footer credit but kept under the
+        // text while the view scrolls. Lives in this component's scope so
+        // fitBudget can measure it — see the fitBudget note.
+        Text {
+            id: attrLabel
+            anchors.bottom: parent.bottom
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: Math.min(implicitWidth, ts.width)
+            height: visible ? Math.ceil(implicitHeight)
+                            + Math.round(Kirigami.Units.gridUnit * 0.6) : 0
+            visible: root.songSource !== ""
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+            text: visible ? i18n("Lyrics from %1", root.songSource) : ""
+            color: root.cActive
+            opacity: 0.45
+            font.family: root.cfgFont
+            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+        }
+
+        onCreditHChanged: ts.updateFit()
 
         TextMetrics {
             id: measure
@@ -2012,7 +2051,7 @@ PlasmoidItem {
                     PC3.ToolTip.visible: pickerArea.containsMouse && !root.pickerOpen
                     PC3.ToolTip.delay: 500
                     PC3.ToolTip.text: root.currentPlayerName !== ""
-                                      ? i18n("Playing source: %1").arg(root.currentPlayerName)
+                                      ? i18n("Playing source: %1", root.currentPlayerName)
                                       : i18n("Choose the player to control")
                 }
 
@@ -2275,20 +2314,6 @@ PlasmoidItem {
                         font.family: root.cfgFont
                         fontCss: root.cfgFontCss
                         scrolling: Plasmoid.configuration.marquee && root.expanded && root.winVisible
-                    }
-                    // DMS credits the lyrics source under the track info
-                    Text {
-                        Layout.alignment: Qt.AlignHCenter
-                        Layout.preferredWidth: deck.width
-                        horizontalAlignment: Text.AlignHCenter
-                        visible: root.songSource !== ""
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        text: root.songSource !== "" ? i18n("Lyrics from %1").arg(root.songSource) : ""
-                        color: root.cActive
-                        opacity: 0.55
-                        font.family: root.cfgFont
-                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     }
                 }
             }
