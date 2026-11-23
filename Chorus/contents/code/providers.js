@@ -227,13 +227,19 @@ function ttmlToSong(ttml, preserveSourceSpacing) {
     // Pair separate x-bg paragraphs with the closest overlapping lead line.
     for (var b = 0; b < standaloneBackgrounds.length; b++) {
         var part = standaloneBackgrounds[b], best = null, bestDistance = Number.POSITIVE_INFINITY;
+        var bestScore = -Number.POSITIVE_INFINITY;
         for (var li = 0; li < out.length; li++) {
             var lead = out[li];
             var leadEnd = lead.e > lead.t ? lead.e : lead.t + 5000;
             var partEnd = part.e > part.t ? part.e : part.t + 5000;
             var overlap = Math.min(leadEnd, partEnd) - Math.max(lead.t, part.t);
-            var distance = overlap > 0 ? 0 : Math.min(Math.abs(part.t - leadEnd), Math.abs(lead.t - partEnd));
-            if (distance < bestDistance) { bestDistance = distance; best = lead; }
+            var distance = Math.min(Math.abs(part.t - leadEnd), Math.abs(lead.t - partEnd));
+            var score = overlap > 0 ? overlap : -distance;
+            if (score > bestScore) {
+                bestScore = score;
+                bestDistance = overlap > 0 ? 0 : distance;
+                best = lead;
+            }
         }
         if (best && bestDistance <= 2500) {
             if (!best.backgrounds) best.backgrounds = [];
