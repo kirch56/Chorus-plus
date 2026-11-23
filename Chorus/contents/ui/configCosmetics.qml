@@ -20,7 +20,7 @@ KCM.SimpleKCM {
     property alias cfg_showVolumeBar: volumeCheck.checked
     property int cfg_lyricsOffsetMs
     property var cfg_extraProviders: []
-    property alias cfg_wordSyncPriority: wordSyncCheck.checked
+    property alias cfg_popupLyrics: popupLyricsCheck.checked
     property alias cfg_wordAnimation: wordAnimCheck.checked
 
     property var fontDialog: null
@@ -31,9 +31,9 @@ KCM.SimpleKCM {
     property int nextUid: 1
     property int lastBarWidth: 420
 
-    // Extra lyrics providers, shown as checkboxes and stored as a StringList.
-    readonly property var providerIds: ["betterlyrics", "unison", "lyricsplus", "kugou", "youtube"]
-    readonly property var providerNames: ["Better Lyrics", "Unison", "LyricsPlus", "KuGou", "YouTube Music"]
+    // Lyrics providers, in DMS's builtin priority order (Dux Modular Shell).
+    readonly property var providerIds: ["betterlyrics", "unison", "lyricsplus", "kugou", "lrclib", "youtube"]
+    readonly property var providerNames: ["Better Lyrics", "Unison", "LyricsPlus", "KuGou", "LRCLIB", "YouTube Music"]
 
     function providerEnabled(pid) {
         var arr = cfg_extraProviders || [];
@@ -326,7 +326,7 @@ KCM.SimpleKCM {
 
         QQC2.Label {
             Kirigami.FormData.label: i18n("Lyrics providers:")
-            text: i18n("Extra sources tried in order when LRCLIB has no synced lyrics, or when it only has line-level lyrics but one of these can supply word-level timings:")
+            text: i18n("Raced at once, DMS style; the best answer wins. Priority goes to lyrics whose length matches the track, then word timings, then the sources whose timing agrees with the others — the order above decides among equal answers:")
             font: Kirigami.Theme.smallFont
             opacity: 0.7
             wrapMode: Text.WordWrap
@@ -343,12 +343,12 @@ KCM.SimpleKCM {
         }
 
         QQC2.CheckBox {
-            id: wordSyncCheck
-            Kirigami.FormData.label: i18n("Word sync:")
-            text: i18n("Word-sync providers first")
+            id: popupLyricsCheck
+            Kirigami.FormData.label: i18n("Popup:")
+            text: i18n("Show lyrics in the popup")
         }
         QQC2.Label {
-            text: i18n("Try Better Lyrics, Unison and LyricsPlus (word-level timings) before the line-level sources. Line-level lyrics show right away and are upgraded to a word-by-word sweep as soon as one of them has word timings. LRCLIB songs with word timings always win.")
+            text: i18n("The lyrics button in the popup hides or brings back the transcript; this is the default it starts with.")
             font: Kirigami.Theme.smallFont
             opacity: 0.7
             wrapMode: Text.WordWrap

@@ -100,9 +100,10 @@
       <default>unison</default>
       <default>lyricsplus</default>
       <default>kugou</default>
+      <default>lrclib</default>
       <default>youtube</default>
     </entry>
-    <entry name="wordSyncPriority" type="Bool">
+    <entry name="popupLyrics" type="Bool">
       <default>true</default>
     </entry>
     <entry name="wordAnimation" type="Bool">

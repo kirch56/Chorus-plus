@@ -275,12 +275,20 @@ PlasmoidItem {
     readonly property bool wordsAnimEnabled: Plasmoid.configuration.wordAnimation !== false
     property bool wordSync: false
     property int lineIdx: -1
+    // The line the transcript view has moved to ahead of playback (DMS followIndex).
+    property int followIdx: -1
+    property string songSource: ""
+    property bool songInstrumental: false
     property double curStart: 0
     property double curEnd: 0
     property double uiPosMs: 0
     property var cache: ({})
     property var cacheKeys: []
     property bool fetching: false
+
+    // Transcript items for the popup: lyric lines plus instrumental breaks
+    // (DMS LyricsModel.buildItems; a gap longer than 5 s becomes a break).
+    readonly property var lyricItems: haveSynced ? Lrc.buildItems(lines, 5000) : []
 
     // Word fragments of a line, or null when the line (or the config) has no
     // word-level timings to sweep.
@@ -301,6 +309,9 @@ PlasmoidItem {
         if (trackTitle !== "") { optimistic = null; optimisticTimeout.stop(); }
         lines = [];
         lineIdx = -1;
+        followIdx = -1;
+        songSource = "";
+        songInstrumental = false;
         if (trackTitle !== "") {
             posMs = 0;
             posStamp = Date.now();
@@ -370,21 +381,18 @@ PlasmoidItem {
         cache[key] = val;
     }
 
-    // LRCLIB record -> song object. Word-level timings live in the lyricsfile
-    // YAML (hasWordSync); the LRC syncedLyrics stay line-level.
-    function lrclibRecordToSong(rec) {
-        if (!rec) return null;
-        if (rec.hasWordSync && rec.lyricsfile) {
-            var s = Lrc.parseLyricsfile(rec.lyricsfile);
-            if (s && s.lines.length > 0) return s;
-        }
-        if (rec.syncedLyrics) {
-            var s2 = Lrc.parse(rec.syncedLyrics);
-            if (s2 && s2.lines.length > 0) return s2;
-        }
-        return null;
+    // One-shot JS callback on a throwaway QML Timer (QML has no setTimeout).
+    function later(ms, fn) {
+        var t = Qt.createQmlObject("import QtQuick; Timer { }", root, "chorusLaterTimer");
+        t.interval = Math.max(1, ms);
+        t.triggered.connect(function () { t.destroy(); fn(); });
+        t.start();
     }
 
+    // Fetch like DMS: every enabled provider is raced at once and the best
+    // answer wins (see providers.js fetchAll / dmsPick). Priority order is
+    // DMS's builtin order: Better Lyrics, Unison, LyricsPlus, KuGou, LRCLIB,
+    // YouTube Music.
     function fetchLyrics() {
         var key = songKey;
         if (cache[key] !== undefined) {
@@ -393,86 +401,13 @@ PlasmoidItem {
         }
         fetching = true;
         var durS = Math.round(lengthMs / 1000);
-        var url = "https://lrclib.net/api/get?track_name=" + encodeURIComponent(trackTitle)
-                + "&artist_name=" + encodeURIComponent(trackArtist);
-        if (trackAlbum !== "") url += "&album_name=" + encodeURIComponent(trackAlbum);
-        if (durS > 0) url += "&duration=" + durS;
-
-        httpGet(url, function (ok, resp) {
-            if (root.songKey !== key) return;
-            var rec = null;
-            if (ok && resp) {
-                try { rec = JSON.parse(resp); } catch (e) {}
-            }
-            var song = root.lrclibRecordToSong(rec);
-            if (song) {
-                console.log("[chorus] lyrics: LRCLIB match"
-                            + (song.wordSync ? " (word-level)" : " (line-level)"));
-                if (song.wordSync) {
-                    root.fetching = false;
-                    root.rememberCache(key, song);
-                    root.applyLyrics(song);
-                } else {
-                    // Show the line-level lyrics right away, then ask the
-                    // word-sync providers for a karaoke upgrade: fetchAll
-                    // re-applies (and caches) whatever wins in the end.
-                    root.fetching = false;
-                    root.applyLyrics(song);
-                    root.fetchExtraProviders(key, durS, song);
-                }
-                return;
-            }
-            root.httpGet("https://lrclib.net/api/search?track_name=" + encodeURIComponent(root.trackTitle)
-                         + "&artist_name=" + encodeURIComponent(root.trackArtist),
-                function (ok2, resp2) {
-                    if (root.songKey !== key) return;
-                    var song2 = null;
-                    if (ok2 && resp2) {
-                        try {
-                            var arr = JSON.parse(resp2);
-                            // prefer a word-synced record, then the first synced one
-                            var wordRec = null, syncRec = null;
-                            for (var i = 0; i < arr.length; i++) {
-                                if (!wordRec && arr[i].hasWordSync && arr[i].lyricsfile)
-                                    wordRec = arr[i];
-                                if (!syncRec && arr[i].syncedLyrics) syncRec = arr[i];
-                            }
-                            song2 = root.lrclibRecordToSong(wordRec)
-                                    || root.lrclibRecordToSong(syncRec);
-                        } catch (e) {}
-                    }
-                    if (song2) {
-                        console.log("[chorus] lyrics: LRCLIB match (search)"
-                                    + (song2.wordSync ? " (word-level)" : " (line-level)"));
-                        if (song2.wordSync) {
-                            root.fetching = false;
-                            root.rememberCache(key, song2);
-                            root.applyLyrics(song2);
-                        } else {
-                            root.fetching = false;
-                            root.applyLyrics(song2);
-                            root.fetchExtraProviders(key, durS, song2);
-                        }
-                    } else {
-                        root.fetchExtraProviders(key, durS, null);
-                    }
-                });
-        });
-    }
-
-    // Extra lyrics providers (Better Lyrics, Unison, LyricsPlus, KuGou, YouTube
-    // Music). With word-sync priority the word-level capable ones are tried
-    // first and lineFallback (e.g. line-level lyrics from LRCLIB, shown in the
-    // meantime) is only kept when no provider returns word timings.
-    function fetchExtraProviders(key, durS, lineFallback) {
         var ctx = {
             title: trackTitle,
             artist: trackArtist,
             album: trackAlbum,
             durS: durS,
             enabled: Plasmoid.configuration.extraProviders || [],
-            wordSyncPriority: Plasmoid.configuration.wordSyncPriority !== false,
-            lineFallback: lineFallback || null,
+            later: root.later,
             httpGet: httpGet,
             httpPostJson: httpPostJson,
             isStale: function () { return root.songKey !== key; },
@@ -481,8 +416,12 @@ PlasmoidItem {
         Providers.fetchAll(ctx, function (song) {
             if (root.songKey !== key) return;
             root.fetching = false;
-            root.rememberCache(key, song);
-            root.applyLyrics(song);
+            if (song) {
+                root.rememberCache(key, song);
+                root.applyLyrics(song);
+            } else {
+                root.applyLyrics(null);
+            }
         });
     }
 
@@ -490,9 +429,19 @@ PlasmoidItem {
         if (song && song.lines) {
             lines = song.lines;
             wordSync = song.wordSync === true;
+            songSource = song.providerName || "";
+            songInstrumental = song.instrumental === true;
+            // DMS: a line moves into the centre over a share of the time since
+            // the line before it, so the view paces itself to the song
+            for (var i = 0; i < lines.length; i++) {
+                var since = i > 0 ? lines[i].t - lines[i - 1].t : Number.POSITIVE_INFINITY;
+                lines[i].move = Math.max(400, Math.min(1000, since * 0.3));
+            }
         } else {
             lines = [];
             wordSync = false;
+            songSource = "";
+            songInstrumental = false;
         }
         resync();
     }
@@ -514,6 +463,15 @@ PlasmoidItem {
                                           : Math.max(curStart + 5000, lengthMs);
         if (curEnd <= curStart) curEnd = curStart + 1000;
         lineIdx = idx;
+        // DMS followIndex: the view moves to the next line a little before it
+        // starts, so the line is centred when it is sung. leadIn = 0.4 * move.
+        if (idx + 1 < lines.length) {
+            var nx = lines[idx + 1];
+            var leadIn = nx.t - (nx.move || 500) * 0.4;
+            followIdx = t >= leadIn ? idx + 1 : idx;
+        } else {
+            followIdx = idx;
+        }
         lineTimer.stop();
         if (isPlaying && winVisible && idx + 1 < lines.length) {
             lineTimer.interval = Math.max(30, (lines[idx + 1].t - t) / playRate);
@@ -988,60 +946,313 @@ PlasmoidItem {
         }
     }
 
-    // Three stacked lyric lines (previous, current, next) for the popup. The
-    // current line sweeps word by word when timings allow; texts are set
-    // imperatively so roll() can capture the outgoing lines first.
-    component LyricStack: Item {
-        id: stack
+    // DMS 2.0 transcript pieces. One wrapped row of a lyric line: dim glyphs
+    // plus a clipped accent copy whose width is the karaoke sweep edge (DMS
+    // draws this through a shader; a clip keeps the widget light). Rows without
+    // word timings fill at once when the line starts, like DMS's line-timed
+    // parts.
+    component LyricFace: Item {
+        id: face
 
-        property string prevText: ""
-        property string mainText: ""
-        property string nextText: ""
-        property var mainWords: null
-        property bool sweepMain: true
+        property string text: ""
+        property var segments: []           // [{ t, e, x0, x1 }] in px
+        property bool sweepable: false      // true when the fragments carry real word times
+        property real fontPx: 14
+        property int fontWeight: Font.DemiBold
+        property color dimColor: root.cInactive
+        property color fillColor: root.cActive
+        property real clock: -1             // ms; 1e12 = fully sung, -1 = unsung
 
-        width: parent ? parent.width : 0
-        height: prevLabel.height + Kirigami.Units.smallSpacing
-                + mainSlot.height + Kirigami.Units.smallSpacing
-                + nextLabel.height
+        readonly property real lead: fontPx * 0.9
+        readonly property real edgeFrac: {
+            if (!segments || segments.length === 0) return 0;
+            var last = segments[segments.length - 1].x1;
+            if (!(last > 0)) return 0;
+            var e = sweepable ? Lrc.smoothEdge(segments, clock, lead, 240)
+                              : Lrc.fillEdge(segments, clock, false, 0);
+            return Math.max(0, Math.min(1, e / last));
+        }
+
+        width: glyphText.implicitWidth
+        height: Math.ceil(fontPx * 1.45)
 
         Text {
-            id: prevLabel
-            width: parent.width
-            elide: Text.ElideRight
-            visible: stack.prevText !== ""
-            text: stack.prevText
-            color: root.cActive
-            opacity: 0.4
+            id: glyphText
+            textFormat: root.cfgFontCss !== "" ? Text.RichText : Text.PlainText
+            anchors.verticalCenter: parent.verticalCenter
+            text: Lrc.fontSpan(face.text, root.cfgFontCss)
+            color: face.dimColor
             font.family: root.cfgFont
-            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * 0.85
+            font.pixelSize: face.fontPx
+            font.weight: face.fontWeight
         }
-        LyricLineView {
-            id: mainSlot
-            y: prevLabel.height + Kirigami.Units.smallSpacing
-            width: parent.width
-            visible: stack.mainText !== ""
-            text: stack.mainText
-            words: stack.mainWords
-            sweep: stack.sweepMain
-            playing: root.isPlaying
-            textColor: root.cActive
-            fontPx: Kirigami.Theme.defaultFont.pixelSize * 1.45
-            fontWeight: Font.Bold
-            elidePlain: true
-            shrinkToFit: true
+        Item {
+            width: glyphText.implicitWidth * face.edgeFrac
+            height: parent.height
+            clip: true
+            Text {
+                textFormat: root.cfgFontCss !== "" ? Text.RichText : Text.PlainText
+                anchors.verticalCenter: parent.verticalCenter
+                text: Lrc.fontSpan(face.text, root.cfgFontCss)
+                color: face.fillColor
+                font.family: root.cfgFont
+                font.pixelSize: face.fontPx
+                font.weight: face.fontWeight
+            }
         }
+    }
+
+    // DMS LyricsLine port: one transcript row. The promoted row is the accent
+    // colour, big and bold, sweeping word by word; every other row rests small
+    // and dim. Instrumental gaps render as a note glyph. A click seeks here.
+    component LyricRow: Item {
+        id: rowItem
+
+        required property var modelData
+        required property int index
+        property var view: null
+
+        readonly property bool isBreak: modelData.kind === "break"
+        readonly property var line: isBreak ? null : root.lines[modelData.line]
+        readonly property int centre: view ? view.centre : -1
+        readonly property real rowClock: view ? view.now : 0
+        readonly property bool promoted: centre === index
+        readonly property bool live: Math.abs(index - centre) <= 1
+        // DMS: rows behind the centre are fully sung, rows ahead rest empty;
+        // only the rows around the centre get the real clock
+        readonly property real clock: !root.haveSynced ? -1
+            : live ? rowClock : (index < centre ? 1e12 : -1)
+        readonly property real fontPx: promoted ? (view ? view.leadPx : 16)
+                                                : Math.round((view ? view.leadPx : 16) * 0.8)
+        readonly property real rowH: Math.ceil(fontPx * 1.45)
+        readonly property real pad: Kirigami.Units.smallSpacing
+        readonly property bool timed: !isBreak && root.wordsAnimEnabled
+                                      && line && line.words && line.words.length > 1
+        // While browsing every row rests fully visible, like DMS.
+        readonly property real restOpacity: (!view || view.following) ? (promoted ? 1 : 0.4) : 1
+
+        width: view ? view.width : 0
+        height: isBreak ? Math.ceil((view ? view.breakSize : 16) + pad * 2)
+                        : (rows.length > 0 ? rows.length * rowH : rowH) + pad * 2
+        opacity: restOpacity
+        Behavior on opacity { NumberAnimation { duration: 220 } }
+        onHeightChanged: if (view && index >= 0 && height > 0) view.heightCache[index] = height
+
+        property var rows: []
+        function relayout() {
+            if (isBreak || width <= 0 || !line || !view) { rows = []; return; }
+            measure.font.pixelSize = fontPx;
+            measure.font.weight = promoted ? Font.Bold : Font.DemiBold;
+            rows = Lrc.partRows({ text: line.text,
+                                  words: root.lineWords(modelData.line),
+                                  t: line.t, e: line.e },
+                                width, function (s) {
+                                    measure.text = s;
+                                    return measure.advanceWidth;
+                                });
+        }
+        onWidthChanged: relayout()
+        onPromotedChanged: relayout()
+        onModelDataChanged: relayout()
+        Component.onCompleted: relayout()
+
+        TextMetrics {
+            id: measure
+            font.family: root.cfgFont
+        }
+
         Text {
-            id: nextLabel
-            y: mainSlot.y + mainSlot.height + Kirigami.Units.smallSpacing
-            width: parent.width
-            elide: Text.ElideRight
-            visible: stack.nextText !== ""
-            text: stack.nextText
-            color: root.cActive
-            opacity: 0.3
+            visible: rowItem.isBreak
+            anchors.centerIn: parent
+            text: "♪"
+            color: rowItem.promoted ? root.cActive : root.cInactive
             font.family: root.cfgFont
-            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * 0.85
+            font.pixelSize: view ? view.breakSize : 16
+        }
+
+        Repeater {
+            model: rowItem.rows
+
+            delegate: LyricFace {
+                required property var modelData
+                required property int index
+
+                x: Math.round((rowItem.width - width) / 2)
+                y: rowItem.pad + index * rowItem.rowH
+                text: modelData.text
+                segments: modelData.segments
+                sweepable: rowItem.timed
+                fontPx: rowItem.fontPx
+                fontWeight: rowItem.promoted ? Font.Bold : Font.DemiBold
+                dimColor: Qt.alpha(root.cActive, rowItem.promoted ? 0.35 : 0.45)
+                fillColor: root.cActive
+                clock: rowItem.clock
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            enabled: !rowItem.isBreak && rowItem.line && root.playerMatches
+                     && root.player && root.player.canSeek
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                if (rowItem.view) rowItem.view.following = true;
+                root.seekToMs(rowItem.line.t);
+            }
+        }
+    }
+
+    // DMS LyricsOverlay port: the popup transcript. The sung item is centred,
+    // the view follows with a song-paced scroll, the user can browse freely and
+    // a "Follow playback" pill brings the view back. Gaps longer than 5 s are
+    // instrumental breaks; the footer credits the lyrics provider.
+    component Transcript: Item {
+        id: ts
+
+        readonly property var items: root.lyricItems
+        readonly property real leadPx: Math.round(Math.max(Kirigami.Units.gridUnit * 1.1,
+            Math.min(Kirigami.Units.gridUnit * 1.9, ts.height / 12, ts.width / 11)))
+        readonly property real breakSize: Math.round(leadPx * 1.2)
+        readonly property real endPadding: Math.max(0, ts.height / 2
+            - (ts.leadPx * 1.45 + Kirigami.Units.smallSpacing * 2) / 2)
+        property bool following: true
+        property int centre: -1
+        property real now: 0
+        property var heightCache: ({})
+        property bool programmatic: false
+
+        Component.onCompleted: {
+            ts.now = root.nowMs();
+            ts.centre = centreFor(ts.now);
+        }
+
+        // the promoted row's sweep needs a per-frame clock
+        FrameAnimation {
+            running: ts.visible && root.isPlaying && root.haveSynced && ts.following
+            onTriggered: ts.now = root.nowMs()
+        }
+
+        function centreFor(at) {
+            return Lrc.centreItem(ts.items, at, root.followIdx);
+        }
+        function rowHeightAt(i) {
+            if (ts.heightCache[i] !== undefined && ts.heightCache[i] > 0)
+                return ts.heightCache[i];
+            var it = ts.items[i];
+            if (!it) return 0;
+            return (it.kind === "break" ? ts.breakSize : Math.round(ts.leadPx * 0.8) * 1.45)
+                   + Kirigami.Units.smallSpacing * 2;
+        }
+        function moveDurFor(c) {
+            var it = ts.items[c];
+            if (!it || it.kind === "break" || it.line <= 0 || !root.lines[it.line]) return 420;
+            return Math.max(400, Math.min(1000, root.lines[it.line].move || 500));
+        }
+        function targetOffset(c) {
+            var y = ts.endPadding;
+            for (var i = 0; i < c; i++) y += rowHeightAt(i) + lv.spacing;
+            y += rowHeightAt(c) / 2 - ts.height / 2;
+            return Math.max(0, y);
+        }
+        function follow(animate) {
+            if (!root.haveSynced || !ts.following || ts.width <= 0) return;
+            var target = targetOffset(Math.max(0, ts.centre));
+            if (Math.abs(target - lv.contentY) < 1) return;
+            scrollAnim.stop();
+            if (!animate || Math.abs(target - lv.contentY) > ts.height * 2) {
+                ts.programmatic = true;
+                lv.contentY = target;
+                ts.programmatic = false;
+                return;
+            }
+            scrollAnim.to = target;
+            scrollAnim.duration = moveDurFor(ts.centre);
+            scrollAnim.restart();
+        }
+        function browse() {
+            if (!ts.following) return;
+            ts.following = false;
+        }
+
+        onItemsChanged: {
+            ts.heightCache = ({});
+            ts.following = true;
+            ts.now = root.nowMs();
+            ts.centre = centreFor(ts.now);
+            scrollAnim.stop();
+            ts.programmatic = true;
+            lv.contentY = 0;
+            ts.programmatic = false;
+            followTimer.restart();
+        }
+        onWidthChanged: followTimer.restart()
+        onHeightChanged: followTimer.restart()
+        onFollowingChanged: if (!ts.following) scrollAnim.stop()
+
+        NumberAnimation {
+            id: scrollAnim
+            target: lv
+            property: "contentY"
+            duration: 420
+            easing.type: Easing.OutQuint
+            onStarted: ts.programmatic = true
+            onStopped: ts.programmatic = false
+        }
+        Timer {
+            id: followTimer
+            interval: 0
+            onTriggered: ts.follow(true)
+        }
+
+        Connections {
+            target: root
+            function onFollowIdxChanged() {
+                ts.centre = ts.centreFor(root.nowMs());
+                ts.now = root.nowMs();
+                followTimer.restart();
+            }
+            function onLineIdxChanged() {
+                ts.centre = ts.centreFor(root.nowMs());
+                ts.now = root.nowMs();
+                followTimer.restart();
+            }
+            function onHaveSyncedChanged() { ts.now = root.nowMs(); }
+        }
+
+        ListView {
+            id: lv
+            anchors.fill: parent
+            clip: true
+            reuseItems: true
+            cacheBuffer: Math.max(0, Math.round(ts.height))
+            spacing: Kirigami.Units.smallSpacing
+            boundsBehavior: Flickable.StopAtBounds
+            model: ts.items
+            header: Item { width: lv.width; height: ts.endPadding }
+            footer: Item {
+                width: lv.width
+                height: Math.max(ts.endPadding, attrText.implicitHeight + Kirigami.Units.gridUnit)
+                Text {
+                    id: attrText
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: parent.top
+                    anchors.topMargin: Kirigami.Units.smallSpacing
+                    visible: root.songSource !== ""
+                    textFormat: Text.PlainText
+                    text: root.songSource
+                    color: root.cActive
+                    opacity: 0.35
+                    font.family: root.cfgFont
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                }
+            }
+            delegate: LyricRow {
+                view: ts
+            }
+            onContentYChanged: {
+                if (!ts.programmatic && !scrollAnim.running) ts.browse();
+            }
+            onDraggingChanged: if (lv.dragging) ts.browse()
         }
     }
 
@@ -1137,7 +1348,7 @@ PlasmoidItem {
         readonly property string displayText: {
             if (root.dispTitle === "") return i18n("Nothing playing");
             if (titleMode)
-                return Lrc.normalize(root.dispTitle) + (root.dispArtist ? "  -  " + Lrc.normalize(root.dispArtist) : "");
+                return Lrc.normalize(root.dispTitle) + (root.dispArtist ? "  •  " + Lrc.normalize(root.dispArtist) : "");
             var t = root.lines[root.lineIdx].text;
             return t.length ? t : "♪";
         }
@@ -1221,24 +1432,16 @@ PlasmoidItem {
                 Kirigami.Icon {
                     anchors.fill: parent
                     anchors.margins: 3
-                    source: "media-album-cover"
+                    source: "folder-music-symbolic"
                     color: root.cActive
                     visible: root.dispArt == "" || coverImg.failed
                     opacity: 0.6
                 }
             }
 
-            Rectangle {
-                Layout.preferredWidth: 1
-                Layout.preferredHeight: bar.thick * 0.55
-                Layout.alignment: Qt.AlignVCenter
-                color: root.cActive
-                opacity: 0.25
-            }
-
             Item {
                 Layout.fillWidth: !bar.fixedW
-                Layout.preferredWidth: bar.fixedW ? 0 : bar.pad
+                Layout.preferredWidth: bar.pad
             }
 
             Item {
@@ -1334,15 +1537,7 @@ PlasmoidItem {
 
             Item {
                 Layout.fillWidth: !bar.fixedW
-                Layout.preferredWidth: bar.fixedW ? 0 : bar.pad
-            }
-
-            Rectangle {
-                Layout.preferredWidth: 1
-                Layout.preferredHeight: bar.thick * 0.55
-                Layout.alignment: Qt.AlignVCenter
-                color: root.cActive
-                opacity: 0.25
+                Layout.preferredWidth: bar.pad
             }
 
             RowLayout {
@@ -1378,11 +1573,19 @@ PlasmoidItem {
 
     fullRepresentation: Item {
         id: popup
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 17
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 34
         Layout.preferredHeight: mainCol.implicitHeight + Kirigami.Units.gridUnit * 2
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 15
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 28
         Layout.minimumHeight: Layout.preferredHeight
         Layout.maximumHeight: Layout.preferredHeight
+
+        // DMS lyrics toggle: the transcript takes the hero's left column and
+        // can be hidden, letting the cover deck take over. The choice is kept
+        // across sessions.
+        readonly property bool showLyrics: Plasmoid.configuration.popupLyrics !== false
+        function toggleLyrics() {
+            Plasmoid.configuration.popupLyrics = !popup.showLyrics;
+        }
 
         Timer {
             interval: 500
@@ -1427,193 +1630,265 @@ PlasmoidItem {
                 }
             }
 
-            // big cover
+            // DMS media card hero: the transcript lyrics sit on the left and
+            // the cover deck on the right; the lyrics button hides the text
+            // and gives the deck the full width, like DMS's lyrics toggle.
             Item {
-                Layout.alignment: Qt.AlignHCenter
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 11
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 11
+                id: hero
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 15
 
-                CoverImage {
-                    id: bigCover
-                    anchors.fill: parent
-                    src: root.dispArt
-                    px: 512
-                    radius: 12
-                    visible: root.dispArt != "" && !bigCover.failed
-                }
-                Kirigami.Icon {
-                    anchors.fill: parent
-                    source: "media-album-cover"
-                    color: root.cActive
-                    visible: root.dispArt == "" || bigCover.failed
-                    opacity: 0.5
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.doRaise()
-                    onWheel: function (wheel) {
-                        if (!root.canSetVolume) return;
-                        root.changeVol(wheel.angleDelta.y > 0 ? 5 : -5);
-                        if (root.canSetVolume) volOverlay.show();
-                        wheel.accepted = true;
+                readonly property real gap: Kirigami.Units.largeSpacing
+                readonly property real deckMax: Kirigami.Units.gridUnit * 16
+
+                Item {
+                    id: lyricPane
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: Math.round(popup.showLyrics
+                                      ? hero.width * 0.52 - hero.gap / 2
+                                      : 0)
+                    Behavior on width {
+                        NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
                     }
-                }
-                Rectangle {
-                    id: volOverlay
-                    anchors.fill: parent
-                    radius: 12
-                    color: Qt.rgba(0.15, 0.15, 0.15, 0.72)
-                    opacity: 0
-                    function show() { opacity = 1; volHide.restart(); }
-                    Behavior on opacity { NumberAnimation { duration: 150 } }
-                    Text {
-                        textFormat: Text.PlainText
-                        id: volLabel
+                    visible: width > Kirigami.Units.gridUnit * 8
+
+                    Transcript {
+                        id: transcriptView
+                        anchors.fill: parent
+                        function resumeFollow() {
+                            following = true;
+                            followTimer.restart();
+                        }
+                    }
+
+                    Rectangle {
+                        anchors.top: parent.top
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        height: Math.min(transcriptView.height * 0.2, Kirigami.Units.gridUnit * 2)
+                        gradient: Gradient {
+                            GradientStop { position: 0; color: Kirigami.Theme.backgroundColor }
+                            GradientStop { position: 1; color: "transparent" }
+                        }
+                    }
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        height: Math.min(transcriptView.height * 0.2, Kirigami.Units.gridUnit * 2)
+                        gradient: Gradient {
+                            GradientStop { position: 0; color: "transparent" }
+                            GradientStop { position: 1; color: Kirigami.Theme.backgroundColor }
+                        }
+                    }
+
+                    // DMS "Follow playback" pill, shown while the user browses
+                    Rectangle {
+                        id: followPill
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: Kirigami.Units.smallSpacing * 2
+                        visible: root.haveSynced && !transcriptView.following
+                        radius: height / 2
+                        color: Qt.alpha(root.cActive, 0.18)
+                        width: followRow.implicitWidth + Kirigami.Units.gridUnit
+                        height: Kirigami.Units.gridUnit * 1.6
+
+                        Row {
+                            id: followRow
+                            anchors.centerIn: parent
+                            spacing: Kirigami.Units.smallSpacing
+                            Kirigami.Icon {
+                                source: "go-jump-locationbar"
+                                width: Kirigami.Units.iconSizes.small
+                                height: width
+                                color: root.cActive
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                textFormat: Text.PlainText
+                                text: i18n("Follow playback")
+                                color: root.cActive
+                                font.family: root.cfgFont
+                                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                font.weight: Font.DemiBold
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: transcriptView.resumeFollow()
+                        }
+                    }
+
+                    // loading / empty states, like DMS's pending indicator and
+                    // none/instrumental messages
+                    Column {
                         anchors.centerIn: parent
-                        text: root.playerMatches && root.player.volume !== undefined
-                              ? Math.round(root.player.volume * 100) + "%" : ""
+                        width: Math.min(parent.width - Kirigami.Units.gridUnit, Kirigami.Units.gridUnit * 12)
+                        spacing: Kirigami.Units.smallSpacing
+                        visible: !root.haveSynced && (root.isActive || root.fetching)
+
+                        PC3.BusyIndicator {
+                            visible: root.fetching
+                            x: (parent.width - width) / 2
+                        }
+                        Text {
+                            width: parent.width
+                            visible: !root.fetching && root.isActive
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                            textFormat: Text.PlainText
+                            text: root.songInstrumental ? i18n("Instrumental")
+                                                        : i18n("No synced lyrics found")
+                            color: root.cActive
+                            opacity: 0.5
+                            font.family: root.cfgFont
+                            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                        }
+                    }
+                }
+
+                // hide / show lyrics button, DMS style
+                Rectangle {
+                    id: lyricToggle
+                    anchors.top: parent.top
+                    anchors.right: parent.right
+                    width: Kirigami.Units.iconSizes.small + Kirigami.Units.smallSpacing * 2
+                    height: width
+                    radius: Kirigami.Units.smallSpacing
+                    color: toggleArea.containsMouse
+                           ? Qt.alpha(root.cActive, 0.18)
+                           : Qt.alpha(root.cActive, 0.08)
+
+                    Kirigami.Icon {
+                        anchors.centerIn: parent
+                        source: "view-media-lyrics"
+                        width: Kirigami.Units.iconSizes.small
+                        height: width
                         color: root.cActive
+                        opacity: popup.showLyrics ? 1 : 0.45
+                    }
+                    MouseArea {
+                        id: toggleArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: popup.toggleLyrics()
+                    }
+                    PC3.ToolTip.visible: toggleArea.containsMouse
+                    PC3.ToolTip.delay: 500
+                    PC3.ToolTip.text: popup.showLyrics ? i18n("Hide lyrics")
+                                                       : i18n("Show lyrics")
+                }
+
+                // deck (right): album art with the title block below it,
+                // centred in the space the transcript leaves over
+                ColumnLayout {
+                    id: deck
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: lyricPane.width + hero.gap
+                       + Math.max(0, (hero.width - lyricPane.width - hero.gap - width) / 2)
+                    width: Math.max(Kirigami.Units.gridUnit * 8,
+                                    Math.min(hero.width - lyricPane.width - hero.gap,
+                                             hero.deckMax))
+                    spacing: Kirigami.Units.smallSpacing
+
+                    Behavior on x {
+                        NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+                    }
+
+                    Item {
+                        id: deckCover
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.preferredWidth: Math.min(deck.width, hero.height * 0.62)
+                        Layout.preferredHeight: width
+
+                        CoverImage {
+                            id: bigCover
+                            anchors.fill: parent
+                            src: root.dispArt
+                            px: 512
+                            radius: 14
+                            visible: root.dispArt != "" && !bigCover.failed
+                        }
+                        Kirigami.Icon {
+                            anchors.fill: parent
+                            anchors.margins: Kirigami.Units.gridUnit
+                            source: "media-album-cover"
+                            color: root.cActive
+                            visible: root.dispArt == "" || bigCover.failed
+                            opacity: 0.5
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.doRaise()
+                            onWheel: function (wheel) {
+                                if (!root.canSetVolume) return;
+                                root.changeVol(wheel.angleDelta.y > 0 ? 5 : -5);
+                                if (root.canSetVolume) volOverlay.show();
+                                wheel.accepted = true;
+                            }
+                        }
+                        Rectangle {
+                            id: volOverlay
+                            anchors.fill: parent
+                            radius: 14
+                            color: Qt.rgba(0.15, 0.15, 0.15, 0.72)
+                            opacity: 0
+                            function show() { opacity = 1; volHide.restart(); }
+                            Behavior on opacity { NumberAnimation { duration: 150 } }
+                            Text {
+                                textFormat: Text.PlainText
+                                id: volLabel
+                                anchors.centerIn: parent
+                                text: root.playerMatches && root.player.volume !== undefined
+                                      ? Math.round(root.player.volume * 100) + "%" : ""
+                                color: root.cActive
+                                font.family: root.cfgFont
+                                font.pixelSize: Kirigami.Units.gridUnit * 2.4
+                                font.weight: Font.DemiBold
+                            }
+                            Timer {
+                                id: volHide
+                                interval: 900
+                                onTriggered: volOverlay.opacity = 0
+                            }
+                        }
+                    }
+
+                    MarqueeText {
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.preferredWidth: deck.width
+                        text: root.dispTitle !== "" ? Lrc.normalize(root.dispTitle)
+                                                    : i18n("Nothing playing")
                         font.family: root.cfgFont
-                        font.pixelSize: Kirigami.Units.gridUnit * 2.4
-                        font.weight: Font.DemiBold
+                        fontCss: root.cfgFontCss
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * 1.5
+                        font.bold: true
+                        color: root.cActive
+                        scrolling: Plasmoid.configuration.marquee && root.expanded && root.winVisible
                     }
-                    Timer {
-                        id: volHide
-                        interval: 900
-                        onTriggered: volOverlay.opacity = 0
+                    MarqueeText {
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.preferredWidth: deck.width
+                        visible: root.isActive || root.optimistic !== null
+                        text: {
+                            var parts = [];
+                            if (root.dispArtist !== "") parts.push(Lrc.normalize(root.dispArtist));
+                            if (root.trackAlbum !== "") parts.push(Lrc.normalize(root.trackAlbum));
+                            return parts.join(" · ");
+                        }
+                        color: root.cActive
+                        textOpacity: 0.7
+                        font.family: root.cfgFont
+                        fontCss: root.cfgFontCss
+                        scrolling: Plasmoid.configuration.marquee && root.expanded && root.winVisible
                     }
-                }
-            }
-
-            MarqueeText {
-                Layout.fillWidth: true
-                text: root.dispTitle !== "" ? Lrc.normalize(root.dispTitle) : i18n("Nothing playing")
-                font.family: root.cfgFont
-                fontCss: root.cfgFontCss
-                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * 1.3
-                font.bold: true
-                color: root.cActive
-                scrolling: Plasmoid.configuration.marquee && root.expanded && root.winVisible
-            }
-            MarqueeText {
-                Layout.fillWidth: true
-                visible: root.isActive || root.optimistic !== null
-                text: root.dispArtist !== "" ? Lrc.normalize(root.dispArtist) : " "
-                color: root.cActive
-                textOpacity: 0.7
-                font.family: root.cfgFont
-                fontCss: root.cfgFontCss
-                scrolling: Plasmoid.configuration.marquee && root.expanded && root.winVisible
-            }
-
-            // lyrics: previous / current / next lines with a roll animation,
-            // the current one sweeps word by word when timings allow
-            Item {
-                id: lyricArea
-                Layout.fillWidth: true
-                readonly property bool showLyric: root.haveSynced && root.lineIdx >= 0
-                                                  && root.lineIdx < root.lines.length
-                readonly property int prevIdx: showLyric && root.lineIdx > 0 ? root.lineIdx - 1 : -1
-                readonly property int nextIdx: showLyric && root.lineIdx + 1 < root.lines.length
-                                               ? root.lineIdx + 1 : -1
-                readonly property string prevLineText: prevIdx >= 0 ? root.lines[prevIdx].text : ""
-                readonly property string curLineText: showLyric ? (root.lines[root.lineIdx].text || "♪") : ""
-                readonly property string nextLineText: nextIdx >= 0 ? root.lines[nextIdx].text : ""
-                // the roll paces itself to the song like the Dux Lyrical Engine
-                readonly property real moveDur: {
-                    if (!showLyric || root.lineIdx + 1 >= root.lines.length) return 420;
-                    var gap = root.lines[root.lineIdx + 1].t - root.lines[root.lineIdx].t;
-                    return Math.max(400, Math.min(1000, gap * 0.3));
-                }
-                Layout.preferredHeight: showLyric ? curStack.height
-                                        : (root.isActive || root.fetching ? statusLabel.implicitHeight : 0)
-                clip: true
-
-                LyricStack {
-                    id: prevStack
-                    width: parent.width
-                    opacity: 0
-                    sweepMain: false
-                }
-                LyricStack {
-                    id: curStack
-                    width: parent.width
-                }
-                PC3.Label {
-                    id: statusLabel
-                    width: parent.width
-                    visible: !lyricArea.showLyric && (root.isActive || root.fetching)
-                    textFormat: Text.PlainText
-                    text: root.isActive && !root.haveSynced && !root.fetching
-                          ? i18n("No synced lyrics found") : " "
-                    color: root.cActive
-                    opacity: 0.5
-                    font.family: root.cfgFont
-                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                }
-
-                ParallelAnimation {
-                    id: rollAnim
-                    NumberAnimation {
-                        target: prevStack; property: "y"; to: -prevStack.height * 0.6
-                        duration: lyricArea.moveDur; easing.type: Easing.OutQuint
-                    }
-                    NumberAnimation {
-                        target: prevStack; property: "opacity"; to: 0
-                        duration: lyricArea.moveDur * 0.7; easing.type: Easing.OutQuad
-                    }
-                    NumberAnimation {
-                        target: curStack; property: "y"; to: 0
-                        duration: lyricArea.moveDur; easing.type: Easing.OutQuint
-                    }
-                    NumberAnimation {
-                        target: curStack; property: "opacity"; to: 1
-                        duration: lyricArea.moveDur * 0.7; easing.type: Easing.OutQuad
-                    }
-                }
-
-                function roll() {
-                    rollAnim.stop();
-                    if (!lyricArea.showLyric) {
-                        prevStack.opacity = 0;
-                        prevStack.y = 0;
-                        curStack.opacity = 1;
-                        curStack.y = 0;
-                        curStack.prevText = "";
-                        curStack.mainText = "";
-                        curStack.nextText = "";
-                        curStack.mainWords = null;
-                        return;
-                    }
-                    // capture the outgoing lines before they are replaced
-                    prevStack.prevText = curStack.prevText;
-                    prevStack.mainText = curStack.mainText;
-                    prevStack.nextText = curStack.nextText;
-                    curStack.prevText = lyricArea.prevLineText;
-                    curStack.mainText = lyricArea.curLineText;
-                    curStack.nextText = lyricArea.nextLineText;
-                    curStack.mainWords = root.lineWords(root.lineIdx);
-                    if (prevStack.mainText !== "" && prevStack.mainText !== curStack.mainText
-                            && root.winVisible && root.isPlaying && lyricArea.visible) {
-                        prevStack.opacity = 1;
-                        prevStack.y = 0;
-                        curStack.opacity = 0;
-                        curStack.y = Kirigami.Units.gridUnit * 1.1;
-                        rollAnim.start();
-                    } else {
-                        prevStack.opacity = 0;
-                        prevStack.y = 0;
-                        curStack.opacity = 1;
-                        curStack.y = 0;
-                    }
-                }
-                Component.onCompleted: roll()
-                Connections {
-                    target: root
-                    function onLineIdxChanged() { lyricArea.roll(); }
-                    function onHaveSyncedChanged() { lyricArea.roll(); }
-                    function onWordsAnimEnabledChanged() { lyricArea.roll(); }
                 }
             }
 

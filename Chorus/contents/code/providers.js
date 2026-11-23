@@ -1,17 +1,17 @@
-// Extra lyrics providers, used as fallbacks when LRCLIB has no synced lyrics.
-// Providers: Better Lyrics, Unison, LyricsPlus, KuGou, YouTube Music.
-// Every provider takes a context object and returns a song object via a
-// callback: { lines: [{ t, e, text, words: [{t,e,text}] | null }], wordSync }.
+// Lyrics providers, DMS-style (Dux Modular Shell / dux-go lyrics client).
+// Providers: Better Lyrics, Unison, LyricsPlus, KuGou, LRCLIB, YouTube Music.
+// Every enabled provider is raced at once and the best answer wins:
 //   ctx = {
 //     title, artist, album, durS,      // track metadata, durS = duration in seconds (<= 0 if unknown)
-//     enabled,                         // array of provider ids to try, in priority order
-//     wordSyncPriority,                // prefer word-level capable providers first (default true)
-//     lineFallback,                    // song object to return when nothing better is found
+//     enabled,                         // array of provider ids to race, priority order
+//     later(ms, fn),                   // one-shot callback scheduler (QML Timer)
 //     httpGet(url, cb),                // cb(ok, body)
 //     httpPostJson(url, body, cb),     // cb(ok, body)
 //     isStale(),                       // true if the current song changed while we were fetching
 //     log(msg)
 //   }
+// A song object: { lines: [{ t, e, text, words: [{t,e,text}] | null }],
+//                  wordSync, providerName, durMs?, instrumental? }.
 .pragma library
 .import "lrc.js" as Lrc
 
@@ -512,17 +512,87 @@ function ytFetchCaptions(ctx, videoId, cb) {
     //    handling in XHR), the two players above cover the realistic cases.
 }
 
+// ---------- LRCLIB ----------
+// DMS provider tier: GET /api/get (exact signature match), then
+// /api/search (best record). Records with hasWordSync carry the lyricsfile
+// YAML with word timings; plain syncedLyrics are line-level LRC.
+// An instrumental answer comes back as an empty instrumental song.
+
+function lrclibRecordToSong(rec) {
+    if (!rec) return null;
+    if (rec.instrumental === true)
+        return { lines: [], wordSync: false, instrumental: true,
+                 providerName: "LRCLIB", durMs: (typeof rec.duration === "number" ? rec.duration * 1000 : 0) };
+    var song = null;
+    if (rec.hasWordSync && rec.lyricsfile) {
+        song = Lrc.parseLyricsfile(rec.lyricsfile);
+    }
+    if ((!song || song.lines.length === 0) && rec.syncedLyrics) {
+        song = Lrc.parse(rec.syncedLyrics);
+    }
+    if (!song || song.lines.length === 0) return null;
+    song.providerName = "LRCLIB";
+    song.durMs = (typeof rec.duration === "number" && rec.duration > 0) ? Math.round(rec.duration * 1000) : 0;
+    return song;
+}
+
+function fetchLrclib(ctx, cb) {
+    var durS = ctx.durS > 0 ? ctx.durS : 0;
+    var url = "https://lrclib.net/api/get?track_name=" + encodeURIComponent(ctx.title)
+            + "&artist_name=" + encodeURIComponent(ctx.artist);
+    if (ctx.album) url += "&album_name=" + encodeURIComponent(ctx.album);
+    if (durS > 0) url += "&duration=" + durS;
+    ctx.httpGet(url, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var rec = null;
+        if (ok && resp) {
+            try { rec = JSON.parse(resp); } catch (e) {}
+        }
+        if (rec && (rec.instrumental === true || rec.hasWordSync || rec.syncedLyrics)) {
+            cb(lrclibRecordToSong(rec));
+            return;
+        }
+        // A plain or missing answer gets a title search; the same song is
+        // published under many signatures, so the exact call often misses.
+        var url2 = "https://lrclib.net/api/search?track_name=" + encodeURIComponent(ctx.title)
+                 + "&artist_name=" + encodeURIComponent(ctx.artist);
+        ctx.httpGet(url2, function (ok2, resp2) {
+            if (ctx.isStale()) return;
+            var best = null;
+            if (ok2 && resp2) {
+                try {
+                    var arr = JSON.parse(resp2);
+                    // prefer a word-synced record, then the first synced one
+                    var wordRec = null, syncRec = null;
+                    for (var i = 0; i < arr.length; i++) {
+                        if (!wordRec && arr[i].hasWordSync && arr[i].lyricsfile)
+                            wordRec = arr[i];
+                        if (!syncRec && arr[i].syncedLyrics) syncRec = arr[i];
+                    }
+                    best = wordRec || syncRec || null;
+                } catch (e) {}
+            }
+            cb(best ? lrclibRecordToSong(best) : null);
+        });
+    });
+}
+
 // ---------- registry ----------
 
 // wordSync marks providers that can return word/syllable-level timings:
 // Better Lyrics and Unison serve Apple Music TTML, LyricsPlus aggregates
-// Musixmatch word sync (syllabus arrays). KuGou and YouTube Music are
-// line-level only.
+// Musixmatch word sync (syllabus arrays). KuGou, LRCLIB (mostly) and
+// YouTube Music are line-level.
+//
+// The order is DMS's builtin priority (Dux Modular Shell MediaOptions /
+// dux-go DefaultProviders). Every enabled provider is raced at once and the
+// best answer wins, so the order only decides among answers that agree.
 var PROVIDERS = [
     { id: "betterlyrics", name: "Better Lyrics", wordSync: true, fetch: fetchBetterLyrics },
     { id: "unison", name: "Unison", wordSync: true, fetch: fetchUnison },
     { id: "lyricsplus", name: "LyricsPlus", wordSync: true, fetch: fetchLyricsPlus },
     { id: "kugou", name: "KuGou", wordSync: false, fetch: fetchKugou },
+    { id: "lrclib", name: "LRCLIB", wordSync: false, fetch: fetchLrclib },
     { id: "youtube", name: "YouTube Music", wordSync: false, fetch: fetchYoutubeMusic }
 ];
 
@@ -532,70 +602,202 @@ function getProvider(id) {
     return null;
 }
 
-// Tries the enabled providers for lyrics, cb(song) with the first match or
-// cb(lineFallback/null) when all of them miss.
-//
-// With wordSyncPriority (the default) the word-level capable providers are
-// tried first: the first word-level match wins immediately. A line-level
-// match from those providers is kept as a fallback — trying the rest of the
-// word-level sources may still turn up real word timings. Only when no
-// word-level source matched does the best line-level result (including
-// ctx.lineFallback, e.g. LRCLIB line lyrics) get used, and the line-only
-// providers after it are skipped: they cannot do any better.
+// ---- DMS (dux-shell) pick: which provider's lyrics win ----
+// Ported from dux-go lyrics/score.go: prefer lyrics whose reported length
+// matches the track (plausible), then timed over untimed, then ones whose
+// duration the provider verified, then the ones whose timing sits closest to
+// another provider's. Provider priority order decides among those that agree.
+
+var DMS_END_SLACK_MS = 3000;          // last line may start up to 3 s past the end
+var DMS_LENGTH_SLACK_MS = 2000;       // catalogs round lengths; short tracks need the floor
+var DMS_LENGTH_SHARE = 0.01;          // 1% of the track
+var DMS_MIN_AGREE_BAND_MS = 250;      // gaps within one band count as agreement
+var DMS_AGREE_BAND_SHARE = 0.001;     // 0.1% of the track
+var DMS_MIN_AGREE_LINES = 3;          // fewer aligned lines than this proves nothing
+var DMS_MAX_ALIGN_CELLS = 250000;     // bounds the LCS table
+var DMS_SYNC_GRACE_MS = 2000;         // wait after the first found lyrics (dux-go syncGrace)
+var DMS_LOOKUP_TIMEOUT_MS = 12000;    // whole-race deadline (dux-go lookupTimeout)
+
+// searchable drops notes like "(Radio Edit)", quotes and punctuation, so the
+// alignment can pair lines across catalogs. Go's unicode.IsLetter keeps CJK
+// and Cyrillic; the explicit punctuation ranges stand in for "not a letter".
+function dmsSearchable(text) {
+    return String(text || "").toLowerCase()
+        .replace(/[(\[（【][^)\]）】]*[)\]）】]/g, " ")
+        .replace(/[\u2000-\u206F\u2100-\u214F\u2190-\u2BFF\u2E00-\u2E7F\u3000-\u303F\uFE10-\uFE6F\uFF01-\uFF20\uFF3B-\uFF40\uFF5B-\uFF65]+/g, " ")
+        .replace(/[^0-9A-Za-z\u00C0-\u00FF\u0100-\u04FF\u0590-\u08FF\u0900-\u9FFF\uA000-\uFFDC]+/g, " ")
+        .replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
+}
+
+function dmsTimedCues(song) {
+    if (!song || !song.lines) return [];
+    var out = [];
+    for (var i = 0; i < song.lines.length; i++)
+        if (song.lines[i].text && song.lines[i].text !== "") out.push(song.lines[i]);
+    return out;
+}
+
+// problemWith: lyrics timed for another cut, such as a music video with intro
+// footage. "" = plausible, "length"/"overrun" = a stated problem.
+function dmsProblemWith(ctx, song) {
+    var want = ctx.durS > 0 ? ctx.durS : 0;
+    if (want <= 0) return "";
+    if (song.durMs > 0) {
+        var reported = song.durMs / 1000;
+        if (Math.max(reported - want, want - reported) > Math.max(DMS_LENGTH_SLACK_MS / 1000, want * DMS_LENGTH_SHARE))
+            return "length";
+    }
+    var cues = dmsTimedCues(song);
+    if (cues.length > 0 && cues[cues.length - 1].t > want * 1000 + DMS_END_SLACK_MS)
+        return "overrun";
+    return "";
+}
+
+// medianGap aligns two candidates' lines by text (LCS keeps repeated choruses
+// paired in order) and compares their starts. A constant offset or a drift
+// both raise the median. Returns -1 when too few lines pair up.
+function dmsMedianGap(a, b) {
+    if (a.length * b.length > DMS_MAX_ALIGN_CELLS) return -1;
+    var ta = [], tb = [];
+    for (var i = 0; i < a.length; i++) ta.push(dmsSearchable(a[i].text));
+    for (var j = 0; j < b.length; j++) tb.push(dmsSearchable(b[j].text));
+    // LCS table
+    var table = [];
+    for (var r = 0; r <= a.length; r++) {
+        var row = new Array(b.length + 1);
+        for (var c2 = 0; c2 <= b.length; c2++) row[c2] = 0;
+        table.push(row);
+    }
+    for (var i2 = a.length - 1; i2 >= 0; i2--) {
+        for (var j2 = b.length - 1; j2 >= 0; j2--) {
+            if (ta[i2] !== "" && ta[i2] === tb[j2])
+                table[i2][j2] = table[i2 + 1][j2 + 1] + 1;
+            else
+                table[i2][j2] = Math.max(table[i2 + 1][j2], table[i2][j2 + 1]);
+        }
+    }
+    var gaps = [];
+    for (var p = 0, q = 0; p < a.length && q < b.length; ) {
+        if (ta[p] !== "" && ta[p] === tb[q]) {
+            gaps.push(Math.abs(a[p].t - b[q].t));
+            p++; q++;
+        } else if (table[p + 1][q] >= table[p][q + 1]) {
+            p++;
+        } else {
+            q++;
+        }
+    }
+    if (gaps.length < DMS_MIN_AGREE_LINES) return -1;
+    gaps.sort(function (x, y) { return x - y; });
+    return gaps[gaps.length >> 1];
+}
+
+// pick over the race results: results[i] = song object (already found + named)
+// or null. Returns the winning song or null.
+function dmsPick(ctx, results) {
+    var candidates = [];
+    for (var i = 0; i < results.length; i++) {
+        var song = results[i];
+        if (!song || !song.lines || song.lines.length === 0) continue;
+        var cues = dmsTimedCues(song);
+        candidates.push({
+            priority: i,
+            song: song,
+            cues: cues,
+            plausible: dmsProblemWith(ctx, song) === "",
+            verified: ctx.durS > 0 && song.durMs > 0,
+            timed: cues.length > 0,
+            nearest: Number.POSITIVE_INFINITY
+        });
+    }
+    if (candidates.length === 0) return null;
+    for (var a = 0; a < candidates.length; a++) {
+        for (var b = a + 1; b < candidates.length; b++) {
+            var ca = candidates[a], cb2 = candidates[b];
+            if (!ca.plausible || !cb2.plausible) continue;
+            var gap = dmsMedianGap(ca.cues, cb2.cues);
+            if (gap < 0) continue;
+            if (gap < ca.nearest) ca.nearest = gap;
+            if (gap < cb2.nearest) cb2.nearest = gap;
+        }
+    }
+    var band = Math.max(DMS_MIN_AGREE_BAND_MS, (ctx.durS > 0 ? ctx.durS * 1000 : 0) * DMS_AGREE_BAND_SHARE);
+    function better(x, y) {
+        if (x.plausible !== y.plausible) return x.plausible ? x : y;
+        if (x.timed !== y.timed) return x.timed ? x : y;
+        if (x.verified !== y.verified) return x.verified ? x : y;
+        var bx = Math.floor(x.nearest / band), by = Math.floor(y.nearest / band);
+        if (bx !== by) return bx < by ? x : y;
+        return x.priority <= y.priority ? x : y;
+    }
+    var best = candidates[0];
+    for (var c = 1; c < candidates.length; c++)
+        best = better(best, candidates[c]);
+    return best.song;
+}
+
+// Tries all enabled providers at once, DMS-style, and calls cb with the best
+// answer (or null). The wait for the stragglers after the first match is
+// bounded by DMS_SYNC_GRACE_MS, the whole race by DMS_LOOKUP_TIMEOUT_MS.
+// ctx.later(ms, fn) schedules a one-shot callback (a QML Timer from the widget).
 function fetchAll(ctx, cb) {
     var enabled = ctx.enabled || [];
     var chain = [];
     for (var i = 0; i < PROVIDERS.length; i++)
         if (enabled.indexOf(PROVIDERS[i].id) !== -1) chain.push(PROVIDERS[i]);
-    if (chain.length === 0) { cb(ctx.lineFallback || null); return; }
+    if (chain.length === 0) { cb(null); return; }
 
-    var wordPriority = ctx.wordSyncPriority !== false;
-    var queue = [];
-    if (wordPriority)
-        for (var w = 0; w < chain.length; w++)
-            if (chain[w].wordSync) queue.push(chain[w]);
-    for (var r = 0; r < chain.length; r++)
-        if (queue.indexOf(chain[r]) === -1) queue.push(chain[r]);
+    var results = new Array(chain.length);
+    var answered = 0, foundCount = 0, finished = false, firstFoundAt = 0;
+    var graceSet = false;
 
-    var lineFallback = ctx.lineFallback || null;
-    var idx = -1;
-    function next() {
-        // a line-level match already in hand: only word-level sources left in
-        // the queue can improve on it
-        if (lineFallback) {
-            var more = false;
-            for (var q = idx + 1; q < queue.length; q++)
-                if (queue[q].wordSync) { more = true; break; }
-            if (!more) { cb(lineFallback); return; }
-        }
-        idx += 1;
-        if (idx >= queue.length) { cb(lineFallback); return; }
-        if (ctx.isStale()) return;
-        var p = queue[idx];
-        ctx.log("lyrics: trying " + p.name);
-        try {
-            p.fetch(ctx, function (song) {
-                if (ctx.isStale()) return;
-                if (song && song.lines && song.lines.length) {
-                    // without word-sync priority the first match wins, whatever
-                    // its granularity
-                    if (song.wordSync || !wordPriority) {
-                        ctx.log("lyrics: found on " + p.name
-                                + (song.wordSync ? " (word-level)" : ""));
-                        cb(song);
-                        return;
-                    }
-                    if (!lineFallback) {
-                        ctx.log("lyrics: found on " + p.name + " (line-level)");
-                        lineFallback = song;
-                    }
-                }
-                next();
-            });
-        } catch (e) {
-            ctx.log("lyrics: " + p.name + " failed: " + e);
-            next();
-        }
+    function finish() {
+        if (finished) return;
+        finished = true;
+        var song = dmsPick(ctx, results);
+        if (song) ctx.log("lyrics: " + (song.providerName || "unknown provider") + " won the race"
+                          + (song.wordSync ? " (word-level)" : ""));
+        else ctx.log("lyrics: no provider had synced lyrics");
+        cb(song || null);
     }
-    next();
+
+    function maybeFinish() {
+        if (finished) return;
+        if (answered >= chain.length) { finish(); return; }
+        if (foundCount > 0 && Date.now() - firstFoundAt >= DMS_SYNC_GRACE_MS) finish();
+    }
+
+    function got(idx, song) {
+        if (finished || ctx.isStale()) return;
+        results[idx] = song;
+        answered++;
+        if (song && song.lines && song.lines.length > 0) {
+            foundCount++;
+            if (firstFoundAt === 0) {
+                firstFoundAt = Date.now();
+                if (ctx.later && !graceSet) {
+                    graceSet = true;
+                    ctx.later(DMS_SYNC_GRACE_MS, maybeFinish);
+                }
+            }
+        }
+        maybeFinish();
+    }
+
+    for (var r = 0; r < chain.length; r++) {
+        (function (idx) {
+            var p = chain[idx];
+            ctx.log("lyrics: racing " + p.name);
+            try {
+                p.fetch(ctx, function (song) { got(idx, song); });
+            } catch (e) {
+                ctx.log("lyrics: " + p.name + " failed: " + e);
+                results[idx] = null;
+                answered++;
+                maybeFinish();
+            }
+        })(r);
+    }
+    if (ctx.later) ctx.later(DMS_LOOKUP_TIMEOUT_MS, finish);
+    else maybeFinish();
 }

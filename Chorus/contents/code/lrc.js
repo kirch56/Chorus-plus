@@ -212,7 +212,7 @@ function fillEdge(segs, at, sweep, lead) {
         var s = segs[i];
         if (s.t > at) continue;
         var p = (sweep && s.e > s.t) ? Math.min(1, (at - s.t) / (s.e - s.t)) : 1;
-        var from = s.x0 >= 0 ? s.x0 : -lead;
+        var from = s.x0 > 0 ? s.x0 : -lead;
         edge = Math.max(edge, from + (s.x1 - from) * p);
     }
     return edge;
@@ -245,4 +245,109 @@ function fontSpan(s, css) {
     if (!css || css === "") return s;
     return '<span style="font-family: ' + css + '; white-space: pre">'
            + escapeHtml(s) + '</span>';
+}
+
+// ---- DMS 2.0 transcript view model (ported from Dux Modular Shell's
+// LyricsModel.js / LyricsController) ----
+
+// DMS LyricLayout.hasWords: whether a line carries real words (notes, dots and
+// similar filler glyphs do not count).
+var FILLER = /\s|[♩♪♫♬.…·*~()\[\]\-–—]|🎵|🎶|🎼|\uD834[\uDD00-\uDDFF]/g;
+function hasWords(text) {
+    return String(text || "").replace(FILLER, "") !== "";
+}
+
+// DMS LyricsModel.buildItems: a gap longer than breakGap ms before a line
+// (also before the first one) becomes an instrumental break item. Times in ms.
+function buildItems(lines, breakGap) {
+    var items = [], prevEnd = 0;
+    for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i];
+        if (ln.t - prevEnd > breakGap)
+            items.push({ kind: "break", line: i, t: prevEnd, e: ln.t });
+        items.push({ kind: "line", line: i, t: ln.t, e: ln.e });
+        if (isFinite(ln.e)) prevEnd = Math.max(prevEnd, ln.e);
+    }
+    return items;
+}
+
+// DMS LyricsModel.centreItem: the break being played wins over the line before
+// it, and the line moving in early wins over the break. followIndex is the
+// line the view has moved to ahead of playback.
+function centreItem(items, at, followIndex) {
+    var centre = 0;
+    for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        if (item.t > at && item.line > followIndex) break;
+        if (item.t <= at || (item.kind === "line" && item.line <= followIndex))
+            centre = i;
+    }
+    return centre;
+}
+
+// DMS LyricsModel.layoutRows, ported over word fragments instead of character
+// ranges: wraps a line into rows that fit maxWidth, every fragment keeping its
+// own times so the karaoke sweep runs across wrapped rows too. A fragment
+// wider than a row breaks between characters, its time split in proportion.
+// measure(text) -> advance width in px.
+// Returns [{ text, width, segments: [{ t, e, x0, x1 }] }].
+function partRows(part, maxWidth, measure) {
+    var text = String(part.text || "");
+    if (!text) return [];
+    var frags = null;
+    if (part.words && part.words.length > 1) {
+        frags = [];
+        for (var i = 0; i < part.words.length; i++) {
+            var w = part.words[i];
+            if (w && typeof w.t === "number" && w.text)
+                frags.push({ t: w.t, e: (typeof w.e === "number" && w.e > w.t) ? w.e : w.t,
+                             x: String(w.text) });
+        }
+        if (frags.length === 0) frags = null;
+    }
+    if (!frags) {
+        // line-level: split into tokens so long lines still wrap; a row's whole
+        // fill lights at once when its fragment starts
+        frags = [];
+        var re = /\S+\s*/g, m;
+        while ((m = re.exec(text)) !== null)
+            frags.push({ t: part.t, e: part.e, x: m[0] });
+        if (frags.length === 0) frags = [{ t: part.t, e: part.e, x: text }];
+    }
+    // split too-wide fragments between characters, time split in proportion
+    var units = [];
+    for (var f = 0; f < frags.length; f++) {
+        var frag = frags[f];
+        var fw = measure(frag.x);
+        if (fw <= maxWidth || fw <= 0 || maxWidth <= 0) { units.push(frag); continue; }
+        var chars = Array.from(frag.x);
+        var total = chars.length;
+        var dur = frag.e > frag.t ? frag.e - frag.t : 0;
+        for (var c = 0; c < chars.length; ) {
+            var chunk = "", cw = 0;
+            while (c < chars.length) {
+                var nextW = measure(chunk + chars[c]);
+                if (chunk !== "" && cw + nextW > maxWidth) break;
+                chunk += chars[c];
+                cw = nextW;
+                c++;
+            }
+            var from = frag.t + dur * (c - chunk.length) / total;
+            var to = frag.t + dur * c / total;
+            units.push({ t: from, e: to > from ? to : frag.t, x: chunk });
+        }
+    }
+    var rows = [], row = null, rowW = 0;
+    for (var u = 0; u < units.length; u++) {
+        var unit = units[u];
+        var uw = measure(unit.x);
+        if (row !== null && rowW + uw > maxWidth) { rows.push(row); row = null; }
+        if (row === null) { row = { text: "", width: 0, segments: [] }; rowW = 0; }
+        row.segments.push({ t: unit.t, e: unit.e, x0: rowW, x1: rowW + uw });
+        row.text += unit.x;
+        rowW += uw;
+        row.width = rowW;
+    }
+    if (row !== null) rows.push(row);
+    return rows;
 }

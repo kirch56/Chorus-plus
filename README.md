@@ -47,8 +47,9 @@ https://github.com/user-attachments/assets/aff481a7-01e9-43f6-9053-7931b17a784e
 
 ## Features
 
-- **Synced lyrics** from [LRCLIB](https://lrclib.net), a free and open-source lyrics library, with **five fallback providers**: Better Lyrics, Unison, LyricsPlus, KuGou and YouTube Music.
-- **Word-by-word sync**: when a source carries word timings (LRCLIB lyricsfiles, Better Lyrics / Unison TTML, LyricsPlus Musixmatch word sync), words light up one by one as they are sung — an Apple Music style karaoke sweep in the panel and the popup. Providers with word timings are tried first, and it can be turned off under **Look & Feel → Word sync / Animation**.
+- **Synced lyrics** raced across **six providers** — Better Lyrics, Unison, LyricsPlus, KuGou, LRCLIB and YouTube Music — with a DMS-style scoring: the best answer wins, not just the first one.
+- **Word-by-word sync**: when a source carries word timings (LRCLIB lyricsfiles, Better Lyrics / Unison TTML, LyricsPlus Musixmatch word sync), words light up one by one as they are sung — an Apple Music style karaoke sweep in the panel and the popup. Toggle it under **Look & Feel → Animation**.
+- **DMS-style popup** (ported from [Dux Modular Shell](https://github.com/AvengeMedia/DankMaterialShell)): scrolling lyrics transcript on the left — the sung line centred, big and sweeping word by word, click any line to seek, "Follow playback" after scrolling around — and the album cover with the track on the right. A lyrics button hides the text and hands the space to the cover.
 - Works with **any media player**: Spotify, YouTube Music, VLC, etc.
 - Album cover, current lyric, playback controls, seek bar, shuffle/repeat, volume slider.
 - **Fixed panel width** (default) keeps the bar compact — set the exact pixel width, or uncheck it to fit the current lyric line (min/max width in % of screen).
@@ -77,15 +78,16 @@ kpackagetool6 -t Plasma/Applet -u chorus-plus.plasmoid
 
 ## Lyrics
 
-Synced lyrics come from [LRCLIB](https://lrclib.net), a free and open-source lyrics library — including its [Lyricsfile](https://lrclib.net/lyricsfile) records, which can carry word-level timings. If LRCLIB has no synced lyrics for a song, the widget tries the extra providers below, in this order — each one can be toggled in the widget settings under **Look & Feel → Lyrics providers**:
+All six providers below are asked at once, like DMS (Dux Modular Shell) does it: every source is raced in parallel and the best answer wins — lyrics whose length matches the track beat ones timed for another cut, word timings beat bare lines, and sources whose timing agrees with the others beat lone outliers. Only among answers that agree does the priority order decide. Each provider can be toggled in the widget settings under **Look & Feel → Lyrics providers**:
 
 1. **Better Lyrics** — the [Better Lyrics API](https://api.betterlyrics.org), Apple Music TTML with per-word timings when available
 2. **Unison** — community-submitted synced lyrics at [unison.betterlyrics.org](https://unison.betterlyrics.org); the submitter is credited in the widget log
 3. **LyricsPlus** — the [LyricsPlus](https://github.com/ibratabian17/lyricsplus) aggregator (Apple Music, QQ, Musixmatch and more, including word/syllable sync)
 4. **KuGou** — the [KuGou](https://www.kugou.com) lyrics library, great for CJK songs (line-level only)
-5. **YouTube Music** — timed captions from YouTube's InnerTube API; YouTube blocks some networks entirely, so this one may be unavailable depending on where you are (line-level only)
+5. **LRCLIB** — the [LRCLIB](https://lrclib.net) library, including its [Lyricsfile](https://lrclib.net/lyricsfile) records with word-level timings
+6. **YouTube Music** — timed captions from YouTube's InnerTube API; YouTube blocks some networks entirely, so this one may be unavailable depending on where you are (line-level only)
 
-With **Word-sync providers first** enabled (default), sources that can deliver word timings are tried before line-level ones: if LRCLIB only has line-level lyrics for a song, they are shown right away, and Better Lyrics, Unison and LyricsPlus are asked in the background for word timings — as soon as one of them has them, the lyrics upgrade mid-song to the word-by-word sweep. With the option off, the list above is followed in exactly the given order and the first hit wins.
+Gaps longer than 5 seconds render as instrumental breaks, and the footer of the transcript credits the provider the lyrics came from.
 
 The **Word-by-word karaoke sweep** animation (Apple Music style, borrowed from DMS 2.0's Dux Lyrical Engine) fills each word with the highlight color as it is sung, with a soft smoothing window so short syllables glide instead of flicking. Songs without word timings keep the classic line-by-line behavior.
 

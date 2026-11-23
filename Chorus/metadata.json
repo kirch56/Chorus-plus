@@ -14,7 +14,7 @@
         "Id": "net.netherizzium.chorus",
         "License": "GPL3",
         "Name": "Chorus",
-        "Version": "2.13.0",
+        "Version": "2.14.0",
         "Website": "https://github.com/Netherizzium/chorus"
     },
     "X-Plasma-API-Minimum-Version": "6.0",
