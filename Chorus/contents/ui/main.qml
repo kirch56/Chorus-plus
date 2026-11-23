@@ -1692,6 +1692,11 @@ PlasmoidItem {
                     id: content
                     height: parent.height
                     width: curLine.width
+                    // marquee owns mqX; x only follows it while the text
+                    // overflows, otherwise the text is centred in the viewport
+                    readonly property bool overflow: width > viewport.width + 1
+                    property real mqX: 0
+                    x: overflow ? mqX : Math.max(0, (viewport.width - width) / 2)
 
                     LyricLineView {
                         id: prevLine
@@ -1739,16 +1744,16 @@ PlasmoidItem {
                         loops: Animation.Infinite
                         PauseAnimation { duration: 2000 }
                         NumberAnimation {
-                            target: content; property: "x"
+                            target: content; property: "mqX"
                             to: Math.min(0, viewport.width - content.width)
                             duration: Math.max(1000, (content.width - viewport.width) * 35)
                         }
                         PauseAnimation { duration: 2000 }
-                        NumberAnimation { target: content; property: "x"; to: 0; duration: 600 }
+                        NumberAnimation { target: content; property: "mqX"; to: 0; duration: 600 }
                     }
                     function marqueeCheck() {
                         marqueeAnim.stop();
-                        content.x = 0;
+                        content.mqX = 0;
                         if (Plasmoid.configuration.marquee && root.winVisible && bar.shown
                                 && (root.isPlaying || root.expanded)
                                 && content.width > viewport.width + 1)
