@@ -196,5 +196,5 @@ test("SyncLRC provider requests structured TTML rather than flattened LRC", () =
     assert.ok(start >= 0 && end > start);
     const adapter = providerSource.slice(start, end);
     assert.match(adapter, /type=karaoke&format=ttml/);
-    assert.match(adapter, /ttmlToSong\\(unwrapTtml\\(ttml\\)\\)/);
+    assert.ok(adapter.includes("ttmlToSong(unwrapTtml(ttml))"));
 });
