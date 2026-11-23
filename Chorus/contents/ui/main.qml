@@ -1203,10 +1203,12 @@ PlasmoidItem {
         // The cost model mirrors LyricRow's real layout via the same
         // measure/Lrc.partRows pipeline itemHeightAt uses.
         function fitBudget() {
-            // everything-visible budget: the small pads endPadding uses in
-            // fit mode (gridUnit total), minus a rounding margin for
-            // estimate drift against the real Text metrics
-            return ts.height - Kirigami.Units.gridUnit - 6;
+            // everything-visible budget: the small top pad endPadding uses in
+            // fit mode (half a grid unit), the real footer height (the lyrics
+            // credit lives there), and a rounding margin for estimate drift
+            var footerH = Math.max(Math.round(Kirigami.Units.gridUnit * 0.5),
+                                   attrText.implicitHeight + Kirigami.Units.gridUnit);
+            return ts.height - Math.round(Kirigami.Units.gridUnit * 0.5) - footerH - 6;
         }
         function fitCost(px) {
             var total = 0;
