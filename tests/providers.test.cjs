@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 
 const providerPath = path.join(__dirname, "..", "Chorus", "contents", "code", "providers.js");
 const source = fs.readFileSync(providerPath, "utf8")
-    .replace(/^\\.(?:pragma|import)\\b.*$/gm, "");
+    .split("\n").filter(line => !line.startsWith(".pragma") && !line.startsWith(".import")).join("\n");
 const sandbox = vm.createContext({});
 new vm.Script(source, { filename: "providers.js" }).runInContext(sandbox);
 
