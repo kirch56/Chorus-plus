@@ -86,14 +86,14 @@ All fourteen providers below are raced in parallel, like DMS (Dux Modular Shell)
 4. **LRCMux** — [LRCMux](https://lrcmux.dev), a public aggregator with word-synced Deezer and KuGou results
 5. **LiriQo** — [LiriQo](https://github.com/AlFarrizi-Studio/LiriQo), an 11-source aggregator with word- and syllable-level timing
 6. **Lyrica** — [Lyrica](https://github.com/Wilooper/Lyrica), another multi-source lookup with optional word timestamps
-8. **SyncLyrics API** — [Stef-DP/lyrics-api](https://github.com/Stef-DP/lyrics-api), word-synced lyrics from Musixmatch, LRCLIB and NetEase
-9. **AMLL TTML DB** — [AMLL community TTML database](https://github.com/amll-dev/amll-ttml-db), queried by song and artist
-10. **lrc.red** — [lrc.red](https://lrc.red), community TTML with word/syllable timing; Chorus identifies itself and credits the source
-11. **LyricsDB** — [LyricsDB](https://github.com/Anson10124/LyricsDB), public word-synced library; uncached live lookups are limited to 6/minute
-12. **Karalyr** — [Karalyr](https://karalyr.com/docs), word-synced Enhanced LRC only; its public catalogue is currently small
-13. **KuGou** — the [KuGou](https://www.kugou.com) lyrics library, useful for CJK songs (line-level only)
-14. **LRCLIB** — the [LRCLIB](https://lrclib.net) library, including [Lyricsfile](https://lrclib.net/lyricsfile) records with word-level timings
-15. **YouTube Music** — timed captions from YouTube's InnerTube API; some networks are blocked (line-level only)
+7. **SyncLyrics API** — [Stef-DP/lyrics-api](https://github.com/Stef-DP/lyrics-api), word-synced lyrics from Musixmatch, LRCLIB and NetEase
+8. **AMLL TTML DB** — [AMLL community TTML database](https://github.com/amll-dev/amll-ttml-db), queried by song and artist
+9. **lrc.red** — [lrc.red](https://lrc.red), community TTML with word/syllable timing; Chorus identifies itself and credits the source
+10. **LyricsDB** — [LyricsDB](https://github.com/Anson10124/LyricsDB), public word-synced library; uncached live lookups are limited to 6/minute
+11. **Karalyr** — [Karalyr](https://karalyr.com/docs), word-synced Enhanced LRC only; its public catalogue is currently small
+12. **KuGou** — the [KuGou](https://www.kugou.com) lyrics library, useful for CJK songs (line-level only)
+13. **LRCLIB** — the [LRCLIB](https://lrclib.net) library, including [Lyricsfile](https://lrclib.net/lyricsfile) records with word-level timings
+14. **YouTube Music** — timed captions from YouTube's InnerTube API; some networks are blocked (line-level only)
 
 All added services use public endpoints and require no API key. Their availability, per-song coverage and rate limits are controlled by the respective services.
 
