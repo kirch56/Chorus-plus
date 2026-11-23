@@ -1,5 +1,6 @@
 // Lyrics providers, DMS-style (Dux Modular Shell / dux-go lyrics client).
-// Providers: Better Lyrics, Unison, LyricsPlus, KuGou, LRCLIB, YouTube Music.
+// Providers: Better Lyrics, Unison, LyricsPlus, LRCMux, LiriQo, Lyrica, SyncLRC,
+// SyncLyrics API, AMLL TTML DB, lrc.red, LyricsDB, Karalyr, KuGou, LRCLIB, YouTube Music.
 // Every provider is raced at once and the best answer wins (ctx.enabled may
 // still restrict the set, but the widget no longer exposes a picker):
 //   ctx = {
@@ -7,7 +8,7 @@
 //     enabled,                         // optional array of provider ids to race, priority order;
 //                                      // undefined or empty = race every provider
 //     later(ms, fn),                   // one-shot callback scheduler (QML Timer)
-//     httpGet(url, cb),                // cb(ok, body)
+//     httpGet(url, cb, headers),       // cb(ok, body); optional headers
 //     httpPostJson(url, body, cb),     // cb(ok, body)
 //     isStale(),                       // true if the current song changed while we were fetching
 //     log(msg)
