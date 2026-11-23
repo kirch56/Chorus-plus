@@ -112,6 +112,21 @@ test("does not reject ordinary tracks when providers omit title or duration", ()
     assert.equal(sandbox.dmsMetadataProblem(context, song), "");
 });
 
+test("keeps a lyrics result in the provider race when ordinary metadata is missing", () => {
+    const context = {
+        title: "DOPAMINE HIT",
+        artist: "ALRT",
+        durS: 175,
+        log: () => {}
+    };
+    const song = {
+        lines: [{ t: 0, e: 1000, text: "Dopamine hit" }],
+        wordSync: true,
+        durMs: 0
+    };
+    assert.equal(sandbox.dmsPick(context, [song]), song);
+});
+
 test("does not reject ordinary tracks for a provider duration discrepancy", () => {
     const context = { title: "DOPAMINE HIT", artist: "ALRT", durS: 175 };
     const song = {
