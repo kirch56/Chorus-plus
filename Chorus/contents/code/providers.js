@@ -50,12 +50,23 @@ function parseTTMLTime(str) {
 // romanization spans (ttm:role="x-translation"/"x-roman"). Those are separate
 // lyric tracks, not words from the lead vocal. Exclude them before flattening,
 // otherwise every translation is rendered on top of the original line.
-function ttmlIsNonLeadRole(tag) {
+function ttmlRole(tag) {
     var m = /(?:[\w.-]+:)?role\s*=\s*["']([^"']+)["']/i.exec(String(tag));
-    if (!m) return false;
-    var roles = m[1].split(/\s+/);
+    return m ? m[1].split(/\s+/) : [];
+}
+
+function ttmlIsTranslationRole(tag) {
+    var roles = ttmlRole(tag);
     for (var i = 0; i < roles.length; i++)
-        if (/^(?:x-bg|x-background|background|background-vocal|x-translation|x-roman|x-transliteration|translation|romanization|transliteration)$/i.test(roles[i]))
+        if (/^(?:x-translation|x-roman|x-transliteration|translation|romanization|transliteration)$/i.test(roles[i]))
+            return true;
+    return false;
+}
+
+function ttmlIsBackgroundRole(tag) {
+    var roles = ttmlRole(tag);
+    for (var i = 0; i < roles.length; i++)
+        if (/^(?:x-bg|x-background|background|background-vocal)$/i.test(roles[i]))
             return true;
     return false;
 }
@@ -63,35 +74,45 @@ function ttmlIsNonLeadRole(tag) {
 // Unwrap untimed structural spans but preserve timed word spans. Translation
 // and romanization subtrees are omitted entirely; their nested timed spans
 // must not leak into the lead-vocal word sequence.
-function flattenTtmlSpans(s) {
+function flattenTtmlSpans(s, backgroundLane, rootBackground) {
+    var wantBackground = backgroundLane === true;
+    var inheritedBackground = rootBackground === true;
     var toks = [], re = /<\/?span\b[^>]*>/g, m, last = 0;
     while ((m = re.exec(s)) !== null) {
-        if (m.index > last)
-            toks.push({ t: "x", s: s.slice(last, m.index) });
-        toks.push({ t: m[0].charAt(1) === "/" ? "c" : "o", s: m[0],
-                    timed: /\b(?:begin|end)\s*=/.test(m[0]),
-                    nonLead: ttmlIsNonLeadRole(m[0]),
-                    selfClosing: /\/\s*>$/.test(m[0]) });
+        if (m.index > last) toks.push({ t: "x", s: s.slice(last, m.index) });
+        toks.push({
+            t: m[0].charAt(1) === "/" ? "c" : "o",
+            s: m[0],
+            timed: /\b(?:begin|end)\s*=/.test(m[0]),
+            translation: ttmlIsTranslationRole(m[0]),
+            background: ttmlIsBackgroundRole(m[0]),
+            selfClosing: /\/\s*>$/.test(m[0])
+        });
         last = re.lastIndex;
     }
-    if (last < s.length)
-        toks.push({ t: "x", s: s.slice(last) });
-    var out = "", stack = [], skipped = 0;
+    if (last < s.length) toks.push({ t: "x", s: s.slice(last) });
+
+    var out = "", stack = [];
     for (var i = 0; i < toks.length; i++) {
         var tk = toks[i];
         if (tk.t === "o") {
-            var excluded = skipped > 0 || tk.nonLead;
-            if (!tk.selfClosing) {
-                stack.push({ excluded: excluded, timed: tk.timed && !excluded });
-                if (excluded) skipped++;
-            }
+            var parent = stack.length > 0 ? stack[stack.length - 1] : null;
+            var isBackground = (parent ? parent.background : inheritedBackground) || tk.background;
+            var isTranslation = (parent ? parent.translation : false) || tk.translation;
+            var excluded = isTranslation || isBackground !== wantBackground;
+            if (!tk.selfClosing)
+                stack.push({ excluded: excluded, timed: tk.timed && !excluded,
+                             background: isBackground, translation: isTranslation });
             if (!excluded && tk.timed) out += tk.s;
         } else if (tk.t === "c") {
             var frame = stack.pop();
-            if (frame && frame.excluded) skipped--;
-            else if (frame && frame.timed) out += tk.s;
-        } else if (skipped === 0) {
-            out += tk.s;
+            if (frame && !frame.excluded && frame.timed) out += tk.s;
+        } else {
+            var active = stack.length > 0 ? stack[stack.length - 1] : null;
+            var skipText = active
+                    ? active.translation || active.background !== wantBackground
+                    : inheritedBackground !== wantBackground;
+            if (!skipText) out += tk.s;
         }
     }
     return out;
@@ -126,8 +147,8 @@ function ttmlJoinWordText(words) {
 // Word-level spans inside a TTML <p>. Explicit whitespace is retained;
 // missing boundaries between timed English words are reconstructed. Translation,
 // romanization and background spans have already been filtered.
-function parseTTMLWords(inner, preserveSourceSpacing) {
-    var flat = flattenTtmlSpans(String(inner));
+function parseTTMLWords(inner, preserveSourceSpacing, backgroundLane, rootBackground, allowSingle) {
+    var flat = flattenTtmlSpans(String(inner), backgroundLane, rootBackground);
     var re = /<span\b([^>]*)>([\s\S]*?)<\/span>([\s\S]*?)(?=<span\b|$)/g;
     var words = [], m;
     while ((m = re.exec(flat)) !== null) {
@@ -146,7 +167,7 @@ function parseTTMLWords(inner, preserveSourceSpacing) {
         if (/^[(（]/.test(words[i].text) && !/\s$/.test(words[i - 1].text))
             words[i - 1].text += " ";
     if (!preserveSourceSpacing) ttmlSpaceWordTokens(words);
-    return words.length >= 2 ? words : null;
+    return words.length >= (allowSingle === true ? 1 : 2) ? words : null;
 }
 
 // TTML -> song object. Regex-based because the QML JS engine has no DOMParser.
@@ -154,32 +175,94 @@ function parseTTMLWords(inner, preserveSourceSpacing) {
 // when a line has at least two timed spans it becomes a word-level line.
 function ttmlToSong(ttml, preserveSourceSpacing) {
     if (!ttml || String(ttml).indexOf("<") === -1) return null;
-    var out = [];
+    var out = [], standaloneBackgrounds = [];
     var re = /<p\b[^>]*?begin="([^"]+)"[^>]*>([\s\S]*?)<\/p>/g;
     var m;
     while ((m = re.exec(String(ttml))) !== null) {
         var open = m[0].slice(0, m[0].indexOf(">"));
-        // Role-marked non-lead paragraphs are separate lyric lanes. Some
-        // upstream TTML payloads also carry a {bg} marker as plain text.
-        if (ttmlIsNonLeadRole(open) || /\{bg\}/i.test(m[2])) continue;
+        if (ttmlIsTranslationRole(open)) continue;
+        var paragraphBackground = ttmlIsBackgroundRole(open);
         var t = parseTTMLTime(m[1]);
         var endM = /\bend\s*=\s*["']([^"']+)["']/.exec(open);
         var e = endM ? parseTTMLTime(endM[1]) : 0;
-        var words = parseTTMLWords(m[2], preserveSourceSpacing);
-        // Same echo spacing as parseTTMLWords applies to the words: glued
-        // "(Echo)" groups are spaced off the main vocal in the rendered text.
-        // Use the filtered span tree here too, so translation text cannot
-        // re-enter the visible line after its word timings were discarded.
-        var leadInner = flattenTtmlSpans(m[2]);
-        var text = words ? ttmlJoinWordText(words)
-                   : leadInner.replace(/<[^>]*>/g, "")
-                     .replace(/\{agent:[^}]*\}/gi, "").replace(/\{bg\}/gi, "")
-                     .replace(/([^\s(（])\(/g, "$1 (").replace(/\s+/g, " ").trim();
-        if (t < 0 || text === "") continue;
-        out.push({ t: t, e: e > t ? e : 0, text: text, words: words });
+
+        // Backing vocals may be x-bg spans inside a lead paragraph, or
+        // a separate paragraph whose role is x-bg.
+        var words = paragraphBackground ? null
+                : parseTTMLWords(m[2], preserveSourceSpacing, false, false);
+        var leadInner = paragraphBackground ? ""
+                : flattenTtmlSpans(m[2], false, false);
+        var text = paragraphBackground ? ""
+                : words ? ttmlJoinWordText(words)
+                : leadInner.replace(/<[^>]*>/g, "")
+                    .replace(/\{agent:[^}]*\}/gi, "").replace(/\{bg\}/gi, "")
+                    .replace(/([^\s(（])\(/g, "$1 (").replace(/\s+/g, " ").trim();
+
+        var bgWords = parseTTMLWords(m[2], preserveSourceSpacing, true,
+                                     paragraphBackground, true);
+        var bgInner = flattenTtmlSpans(m[2], true, paragraphBackground);
+        var bgText = bgWords ? ttmlJoinWordText(bgWords)
+                : bgInner.replace(/<[^>]*>/g, "")
+                    .replace(/\{agent:[^}]*\}/gi, "").replace(/\{bg\}/gi, "")
+                    .replace(/\s+/g, " ").trim();
+        var bg = null;
+        if (bgText !== "") {
+            var bgStart = bgWords && bgWords.length ? bgWords[0].t : t;
+            var bgEnd = e;
+            for (var bi = 0; bgWords && bi < bgWords.length; bi++)
+                if (bgWords[bi].e > bgEnd) bgEnd = bgWords[bi].e;
+            bg = { t: bgStart >= 0 ? bgStart : t, e: bgEnd, text: bgText, words: bgWords };
+        }
+
+        if (t < 0) continue;
+        if (paragraphBackground) {
+            if (bgText !== "") standaloneBackgrounds.push(bg);
+            continue;
+        }
+        if (text === "") continue;
+        out.push({ t: t, e: e > t ? e : 0, text: text, words: words,
+                   backgrounds: bg ? [bg] : [] });
     }
+
+    // Pair separate x-bg paragraphs with the closest overlapping lead line.
+    for (var b = 0; b < standaloneBackgrounds.length; b++) {
+        var part = standaloneBackgrounds[b], best = null, bestDistance = Number.POSITIVE_INFINITY;
+        for (var li = 0; li < out.length; li++) {
+            var lead = out[li];
+            var leadEnd = lead.e > lead.t ? lead.e : lead.t + 5000;
+            var partEnd = part.e > part.t ? part.e : part.t + 5000;
+            var overlap = Math.min(leadEnd, partEnd) - Math.max(lead.t, part.t);
+            var distance = overlap > 0 ? 0 : Math.min(Math.abs(part.t - leadEnd), Math.abs(lead.t - partEnd));
+            if (distance < bestDistance) { bestDistance = distance; best = lead; }
+        }
+        if (best && bestDistance <= 2500) {
+            if (!best.backgrounds) best.backgrounds = [];
+            best.backgrounds.push(part);
+        }
+    }
+
     if (out.length === 0) return null;
-    return Lrc.finalizeLines(out);
+    var song = Lrc.finalizeLines(out);
+    var backgroundWordSync = false;
+    for (var li2 = 0; li2 < song.lines.length; li2++) {
+        var leadLine = song.lines[li2];
+        var backgrounds = leadLine.backgrounds || [];
+        for (var bi2 = 0; bi2 < backgrounds.length; bi2++) {
+            var bgPart = backgrounds[bi2];
+            var normalized = Lrc.finalizeLines([{
+                t: bgPart.t, e: bgPart.e, text: bgPart.text, words: bgPart.words
+            }]);
+            if (normalized.lines.length > 0) {
+                backgrounds[bi2] = normalized.lines[0];
+                if (normalized.wordSync) backgroundWordSync = true;
+            }
+        }
+        leadLine.backgrounds = backgrounds;
+        for (var bi3 = 0; bi3 < backgrounds.length; bi3++)
+            if (backgrounds[bi3].e > leadLine.e) leadLine.e = backgrounds[bi3].e;
+    }
+    if (backgroundWordSync) song.wordSync = true;
+    return song;
 }
 
 // YouTube timedtext json3 -> song object (line-level only).
