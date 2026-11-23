@@ -1076,22 +1076,25 @@ PlasmoidItem {
         readonly property real rowClock: view ? view.now : 0
         readonly property bool promoted: centre === index
         readonly property bool live: Math.abs(index - centre) <= 1
-        // DMS: rows behind the centre are fully sung, rows ahead rest empty;
-        // only the rows around the centre get the real clock
         readonly property real clock: !root.haveSynced ? -1
             : live ? rowClock : (index < centre ? 1e12 : -1)
         readonly property real fontPx: promoted ? (view ? view.leadPx : 16)
                                                 : Math.round((view ? view.leadPx : 16) * 0.82)
         readonly property real rowH: Math.ceil(fontPx * 1.45)
+        readonly property real backgroundFontPx: Math.max(10, Math.round(fontPx * 0.72))
+        readonly property real backgroundRowH: Math.ceil(backgroundFontPx * 1.4)
+        readonly property real backgroundGap: Kirigami.Units.smallSpacing * 0.45
         readonly property real pad: Kirigami.Units.smallSpacing
         readonly property bool timed: !isBreak && root.wordsAnimEnabled
                                       && line && line.words && line.words.length > 1
-        // While browsing every row rests fully visible, like DMS.
         readonly property real restOpacity: (!view || view.following) ? (promoted ? 1 : 0.62) : 1
 
         width: view ? view.width : 0
         height: isBreak ? Math.ceil((view ? view.breakSize : 16) + pad * 2)
-                        : (rows.length > 0 ? rows.length * rowH : rowH) + pad * 2
+                        : Math.max(1, rows.length) * rowH
+                          + (backgroundRows.length > 0
+                             ? backgroundGap + backgroundRows.length * backgroundRowH : 0)
+                          + pad * 2
         Behavior on height {
             NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
         }
@@ -1100,18 +1103,57 @@ PlasmoidItem {
         onHeightChanged: if (view && index >= 0 && height > 0) view.heightCache[index] = height
 
         property var rows: []
+        property var backgroundRows: []
+
         function relayout() {
-            if (isBreak || width <= 0 || !line || !view) { rows = []; return; }
+            if (isBreak || width <= 0 || !line || !view) {
+                rows = [];
+                backgroundRows = [];
+                return;
+            }
+
             measure.font.pixelSize = fontPx;
             measure.font.weight = promoted ? Font.Bold : Font.DemiBold;
-            rows = Lrc.partRows({ text: line.text,
-                                  words: root.lineWords(modelData.line),
-                                  t: line.t, e: line.e },
-                                view.wrapW, function (s) {
-                                    measure.text = s;
-                                    return measure.advanceWidth;
-                                });
+            rows = Lrc.partRows({
+                text: line.text,
+                words: root.lineWords(modelData.line),
+                t: line.t,
+                e: line.e
+            }, view.wrapW, function (s) {
+                measure.text = s;
+                return measure.advanceWidth;
+            });
+
+            var nextBackgroundRows = [];
+            var backgrounds = line.backgrounds || [];
+            measure.font.pixelSize = backgroundFontPx;
+            measure.font.weight = promoted ? Font.Medium : Font.Normal;
+            for (var i = 0; i < backgrounds.length; i++) {
+                var bg = backgrounds[i];
+                if (!bg || !bg.text) continue;
+                var bgRows = Lrc.partRows({
+                    text: bg.text,
+                    words: root.wordsAnimEnabled ? bg.words : null,
+                    t: bg.t,
+                    e: bg.e
+                }, view.wrapW, function (s) {
+                    measure.text = s;
+                    return measure.advanceWidth;
+                });
+                var bgTimed = root.wordsAnimEnabled && bg.words && bg.words.length > 1;
+                for (var j = 0; j < bgRows.length; j++) {
+                    nextBackgroundRows.push({
+                        text: bgRows[j].text,
+                        segments: bgRows[j].segments,
+                        timed: bgTimed
+                    });
+                }
+            }
+            backgroundRows = nextBackgroundRows;
+            measure.font.pixelSize = fontPx;
+            measure.font.weight = promoted ? Font.Bold : Font.DemiBold;
         }
+
         onWidthChanged: relayout()
         onPromotedChanged: relayout()
         onModelDataChanged: relayout()
@@ -1148,6 +1190,28 @@ PlasmoidItem {
                 fontWeight: rowItem.promoted ? Font.Bold : Font.DemiBold
                 dimColor: Qt.alpha(root.cActive, rowItem.promoted ? 0.35 : 0.65)
                 fillColor: root.cActive
+                clock: rowItem.clock
+            }
+        }
+
+        Repeater {
+            model: rowItem.backgroundRows
+
+            delegate: LyricFace {
+                required property var modelData
+                required property int index
+
+                maxWidth: rowItem.width
+                x: Math.round((rowItem.width - width) / 2)
+                y: rowItem.pad + Math.max(1, rowItem.rows.length) * rowItem.rowH
+                   + rowItem.backgroundGap + index * rowItem.backgroundRowH
+                text: modelData.text
+                segments: modelData.segments
+                sweepable: modelData.timed
+                fontPx: rowItem.backgroundFontPx
+                fontWeight: rowItem.promoted ? Font.Medium : Font.Normal
+                dimColor: Qt.alpha(root.cActive, rowItem.promoted ? 0.24 : 0.42)
+                fillColor: Qt.alpha(root.cActive, 0.82)
                 clock: rowItem.clock
             }
         }
