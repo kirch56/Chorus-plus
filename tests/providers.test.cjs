@@ -177,6 +177,21 @@ test("TTML removes background, translation and romanization tracks", () => {
     assert.equal(song.lines[0].words.map(word => word.text).join(""), "I don't want this");
 });
 
+test("lrc.red keeps source whitespace and preserves syllable-level timing", () => {
+    const ttml = `<tt xmlns="http://www.w3.org/ns/ttml"><body><div>
+      <p begin="00:00:01.000" end="00:00:04.000"><span begin="00:00:01.000" end="00:00:01.200">ev</span><span begin="00:00:01.200" end="00:00:01.500">ery</span><span begin="00:00:01.500" end="00:00:01.800"> one </span><span begin="00:00:01.800" end="00:00:02.000">al</span><span begin="00:00:02.000" end="00:00:02.300">ways </span><span begin="00:00:02.300" end="00:00:02.600">talk</span><span begin="00:00:02.600" end="00:00:02.900">ing?</span></p>
+    </div></body></tt>`;
+    const song = sandbox.ttmlToSong(ttml, true);
+    assert.ok(song);
+    assert.equal(song.lines[0].text, "every one always talking?");
+    assert.equal(song.lines[0].words.map(word => word.text).join(""), "every one always talking?");
+    assert.deepEqual(
+        song.lines[0].words.map(word => word.t),
+        [1000, 1200, 1500, 1800, 2000, 2300]
+    );
+    assert.equal(song.wordSync, true);
+});
+
 test("TTML adjacent timed English words get spaces without splitting contractions", () => {
     const ttml = `<tt xmlns="http://www.w3.org/ns/ttml">
       <body><div><p begin="00:00:01.000" end="00:00:04.000">
