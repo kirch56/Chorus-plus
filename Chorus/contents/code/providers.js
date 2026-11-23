@@ -823,30 +823,31 @@ function fetchLyrica(ctx, cb) {
     });
 }
 
-// SyncLRC: request karaoke TTML, then fall back to Enhanced LRC in its JSON
-// response if the server cannot produce TTML for a particular track.
+// SyncLRC: request its native Enhanced LRC response instead of TTML.
+// The API converts its internal TTML to LRC itself and filters non-lead vocal
+// roles before rendering. Parsing that output avoids accidentally flattening
+// nested translation/romanization markup into the lead-vocal text.
 function fetchSyncLRC(ctx, cb) {
     var url = "https://api.synclrc.dev/lyrics?track=" + encodeURIComponent(ctx.title)
             + "&artist=" + encodeURIComponent(ctx.artist)
-            + "&type=karaoke&format=ttml";
+            + "&type=karaoke&format=lrc";
     if (ctx.album) url += "&album=" + encodeURIComponent(ctx.album);
     if (ctx.durS > 0) url += "&duration=" + ctx.durS;
     ctx.httpGet(url, function (ok, resp) {
         if (ctx.isStale()) return;
-        var ttml = ok ? unwrapTtml(resp) : null;
-        var song = ttml ? ttmlToSong(ttml) : null;
-        if (song) {
-            song.providerName = "SyncLRC";
-            song.durMs = providerDurationMs(ctx);
-            cb(song);
-            return;
-        }
         var body = ok && resp ? safeJson(resp) : null;
-        var lrc = body && (body.karaoke || body.lyrics);
-        song = typeof lrc === "string" ? lrcTextToSong(lrc) : null;
+        if (!body) { cb(null); return; }
+
+        // With an explicit format the API returns { lyrics, type, format }.
+        // Keep compatibility with its default { karaoke, synced, plain } shape.
+        var lrc = typeof body.lyrics === "string" ? body.lyrics
+                : (typeof body.karaoke === "string" ? body.karaoke : null);
+        var song = lrc ? lrcTextToSong(lrc) : null;
         if (song) {
             song.providerName = "SyncLRC";
             song.durMs = providerDurationMs(ctx);
+            if (body.type && body.type !== "karaoke")
+                ctx.log("lyrics: SyncLRC returned " + body.type + " fallback");
         }
         cb(song);
     });
