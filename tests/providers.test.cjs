@@ -165,7 +165,7 @@ test("reads provider track metadata without substituting the player's duration",
     );
 });
 
-test("SyncLRC TTML removes background, translation and romanization tracks", () => {
+test("TTML removes background, translation and romanization tracks", () => {
     // Adjacent word spans deliberately contain no whitespace, like the
     // flattened upstream output. Non-lead vocal roles must disappear.
     const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body><div><p begin="00:00:01.000" end="00:00:03.000"><span begin="00:00:01.000" end="00:00:01.200">I</span><span begin="00:00:01.200" end="00:00:01.500">don't</span><span begin="00:00:01.500" end="00:00:01.800">want</span><span begin="00:00:01.800" end="00:00:02.000">this</span><span ttm:role="x-bg"><span begin="00:00:02.100">中文背景歌词</span></span><span ttm:role="x-translation"><span begin="00:00:02.200">中文翻译</span></span><span ttm:role="x-roman"><span begin="00:00:02.300">zhong wen fan yi</span></span></p></div></body></tt>`;
@@ -177,7 +177,7 @@ test("SyncLRC TTML removes background, translation and romanization tracks", () 
     assert.equal(song.lines[0].words.map(word => word.text).join(""), "I don't want this");
 });
 
-test("SyncLRC adjacent timed English words get spaces without splitting contractions", () => {
+test("TTML adjacent timed English words get spaces without splitting contractions", () => {
     const ttml = `<tt xmlns="http://www.w3.org/ns/ttml">
       <body><div><p begin="00:00:01.000" end="00:00:04.000">
         <span begin="00:00:01.000">Don't</span><span begin="00:00:01.300">stop</span><span begin="00:00:01.600">me</span><span begin="00:00:01.800">now!</span>
@@ -189,17 +189,14 @@ test("SyncLRC adjacent timed English words get spaces without splitting contract
     assert.equal(song.wordSync, true);
 });
 
-test("SyncLRC provider requests structured TTML rather than flattened LRC", () => {
+test("removed lyrics provider is absent from the registry and network code", () => {
     const providerSource = fs.readFileSync(providerPath, "utf8");
-    const start = providerSource.indexOf("function fetchSyncLRC");
-    const end = providerSource.indexOf("// SyncLyrics API exposes", start);
-    assert.ok(start >= 0 && end > start);
-    const adapter = providerSource.slice(start, end);
-    assert.match(adapter, /type=karaoke&format=ttml/);
-    assert.ok(adapter.includes("ttmlToSong(unwrapTtml(ttml))"));
+    assert.equal(sandbox.getProvider("synclrc"), null);
+    assert.equal(typeof sandbox.fetchSyncLRC, "undefined");
+    assert.equal(providerSource.includes("api.synclrc.dev"), false);
 });
 
-test("SyncLRC strips literal background and agent markers from fallback TTML", () => {
+test("TTML strips literal background and agent markers from provider payloads", () => {
     const ttml = `<tt xmlns="http://www.w3.org/ns/ttml"><body><div>
       <p begin="00:00:01.000" end="00:00:02.000"><span begin="00:00:01.000">{agent:v1}Hello</span><span begin="00:00:01.300">world</span></p>
       <p begin="00:00:01.500" end="00:00:02.500"><span begin="00:00:01.500">{bg}中文背景歌词</span></p>
