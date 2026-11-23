@@ -65,19 +65,7 @@ jobs:
           ARTIFACT: chorus-plus-v${{ steps.meta.outputs.version }}.plasmoid
         shell: bash
         run: |
-          notes_file="$(mktemp)"
-          cat > "$notes_file" <<EOF
-          # Chorus Plus v${VERSION}
-
-          Adds nine new lyrics sources to the existing parallel lookup. Chorus now races 15 providers and prefers valid word- or syllable-synced timings when available.
-
-          New sources: LRCMux, LiriQo, Lyrica, SyncLRC, SyncLyrics API, AMLL TTML DB, lrc.red, LyricsDB and Karalyr.
-
-          Install / update: `kpackagetool6 --type Plasma/Applet -u ${ARTIFACT}`
-          Then restart Plasma: `systemctl --user restart plasma-plasmashell.service`
-          Use `-i` instead of `-u` for a first install.
-          EOF
           gh release create "$TAG" "$ARTIFACT" \
             --title "Chorus Plus v${VERSION}" \
-            --notes-file "$notes_file" \
+            --generate-notes \
             --target "$GITHUB_SHA"
