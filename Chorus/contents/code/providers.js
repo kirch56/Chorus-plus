@@ -255,7 +255,14 @@ function fetchBetterLyrics(ctx, cb) {
     ctx.httpGet(url, function (ok, resp) {
         if (ctx.isStale()) return;
         var song = ok ? ttmlToSong(unwrapTtml(resp)) : null;
-        if (song) { cb(song); return; }
+        if (song) {
+            var info = providerTrackInfo(safeJson(resp));
+            if (info.title) song.matchTitle = info.title;
+            if (info.artist) song.matchArtist = info.artist;
+            if (info.duration > 0) song.durMs = Math.round(info.duration * 1000);
+            cb(song);
+            return;
+        }
         var url2 = "https://api.betterlyrics.org/kugou/getLyrics?s=" + encodeURIComponent(ctx.title)
                  + "&a=" + encodeURIComponent(ctx.artist)
                  + "&d=" + (ctx.durS > 0 ? ctx.durS : 0);
@@ -264,7 +271,15 @@ function fetchBetterLyrics(ctx, cb) {
             if (!ok2 || !resp2) { cb(null); return; }
             var body;
             try { body = JSON.parse(resp2); } catch (e) { cb(null); return; }
-            cb(body && typeof body.lyrics === "string" ? lrcTextToSong(body.lyrics) : null);
+            var fallbackSong = body && typeof body.lyrics === "string"
+                    ? lrcTextToSong(body.lyrics) : null;
+            if (fallbackSong) {
+                var info = providerTrackInfo(body);
+                if (info.title) fallbackSong.matchTitle = info.title;
+                if (info.artist) fallbackSong.matchArtist = info.artist;
+                if (info.duration > 0) fallbackSong.durMs = Math.round(info.duration * 1000);
+            }
+            cb(fallbackSong);
         });
     });
 }
@@ -293,6 +308,10 @@ function fetchUnison(ctx, cb) {
         else if (fmt === "ttml") song = ttmlToSong(body.data.lyrics);
         // "plain" is not synced; skip it.
         if (song) {
+            var unisonInfo = providerTrackInfo(body.data);
+            if (unisonInfo.title) song.matchTitle = unisonInfo.title;
+            if (unisonInfo.artist) song.matchArtist = unisonInfo.artist;
+            if (unisonInfo.duration > 0) song.durMs = Math.round(unisonInfo.duration * 1000);
             // Unison requires crediting the submitter of the lyrics.
             var who = "";
             try {
@@ -363,7 +382,14 @@ function fetchLyricsPlus(ctx, cb) {
                 var body;
                 try { body = JSON.parse(resp); } catch (e) {}
                 var song = lyricsPlusToSong(body);
-                if (song) { cb(song); return; }
+                if (song) {
+                    var info = providerTrackInfo(body);
+                    if (info.title) song.matchTitle = info.title;
+                    if (info.artist) song.matchArtist = info.artist;
+                    if (info.duration > 0) song.durMs = Math.round(info.duration * 1000);
+                    cb(song);
+                    return;
+                }
             }
             tryBase(i + 1);
         });
@@ -452,7 +478,14 @@ function kugouTrySongs(ctx, info, i, cb) {
         if (!cand) { kugouTrySongs(ctx, info, i + 1, cb); return; }
         kugouDownload(ctx, cand.id, cand.accesskey, function (song) {
             if (ctx.isStale()) return;
-            if (song) { cb(song); return; }
+            if (song) {
+                song.durMs = typeof info[i].duration === "number" && info[i].duration > 0
+                        ? Math.round(info[i].duration * 1000) : 0;
+                if (typeof info[i].songname === "string") song.matchTitle = info[i].songname;
+                if (typeof info[i].singername === "string") song.matchArtist = info[i].singername;
+                cb(song);
+                return;
+            }
             kugouTrySongs(ctx, info, i + 1, cb);
         });
     });
@@ -604,6 +637,8 @@ function lrclibRecordToSong(rec) {
     if (!song || song.lines.length === 0) return null;
     song.providerName = "LRCLIB";
     song.durMs = (typeof rec.duration === "number" && rec.duration > 0) ? Math.round(rec.duration * 1000) : 0;
+    if (typeof rec.trackName === "string") song.matchTitle = rec.trackName;
+    if (typeof rec.artistName === "string") song.matchArtist = rec.artistName;
     return song;
 }
 
@@ -633,14 +668,25 @@ function fetchLrclib(ctx, cb) {
             if (ok2 && resp2) {
                 try {
                     var arr = JSON.parse(resp2);
-                    // prefer a word-synced record, then the first synced one
-                    var wordRec = null, syncRec = null;
+                    // Prefer the closest recording, not merely the first
+                    // word-synced result. Album editions, remixes and radio
+                    // edits often share a base title but have different lengths.
+                    var bestScore = -1;
                     for (var i = 0; i < arr.length; i++) {
-                        if (!wordRec && arr[i].hasWordSync && arr[i].lyricsfile)
-                            wordRec = arr[i];
-                        if (!syncRec && arr[i].syncedLyrics) syncRec = arr[i];
+                        var candidate = arr[i];
+                        if (!candidate || !(candidate.instrumental === true
+                                || candidate.hasWordSync || candidate.syncedLyrics)) continue;
+                        var candidateSong = lrclibRecordToSong(candidate);
+                        if (!candidateSong || dmsMetadataProblem(ctx, candidateSong) !== "") continue;
+                        var score = (candidateSong.wordSync ? 8 : 0)
+                                  + (candidateSong.matchTitle ? 4 : 0)
+                                  + (candidateSong.matchArtist ? 2 : 0)
+                                  + (candidateSong.durMs > 0 ? 2 : 0);
+                        if (score > bestScore) {
+                            best = candidate;
+                            bestScore = score;
+                        }
                     }
-                    best = wordRec || syncRec || null;
                 } catch (e) {}
             }
             cb(best ? lrclibRecordToSong(best) : null);
@@ -653,18 +699,55 @@ function fetchLrclib(ctx, cb) {
 // The providers below intentionally share the widget's existing normalization
 // model. All times in this file are milliseconds unless noted otherwise.
 
-function providerDurationMs(ctx) {
-    return ctx.durS > 0 ? Math.round(ctx.durS * 1000) : 0;
+// Extract only metadata actually returned by a lyrics catalogue. Never
+// substitute the player's duration for a missing catalogue duration: doing
+// that makes an original recording look like a verified remix match.
+function providerTrackInfo(body) {
+    var root = body || {};
+    var track = root.track && typeof root.track === "object" ? root.track : {};
+    var data = root.data && typeof root.data === "object" ? root.data : {};
+    var nested = data.track && typeof data.track === "object" ? data.track : {};
+    function pickString(objects, keys) {
+        for (var i = 0; i < objects.length; i++)
+            for (var j = 0; j < keys.length; j++) {
+                var value = objects[i] && objects[i][keys[j]];
+                if (typeof value === "string" && value.trim() !== "") return value.trim();
+            }
+        return "";
+    }
+    function pickNumber(objects, keys) {
+        for (var i = 0; i < objects.length; i++)
+            for (var j = 0; j < keys.length; j++) {
+                var value = objects[i] && objects[i][keys[j]];
+                if (typeof value === "number" && isFinite(value) && value > 0)
+                    return value > 10000 ? value / 1000 : value;
+            }
+        return 0;
+    }
+    var objects = [root, track, data, nested];
+    var title = typeof root.track === "string" ? root.track
+              : pickString([root, data], ["trackName", "title", "musicName", "songName"]);
+    if (!title) title = pickString([track, nested], ["trackName", "title", "name", "musicName"]);
+    var artist = pickString([root, data], ["artist", "artistName", "artist_name", "singer"]);
+    if (!artist) artist = pickString([track, nested], ["artist", "artistName", "artist_name", "singer"]);
+    return {
+        title: title,
+        artist: artist,
+        duration: pickNumber(objects, ["duration", "durationSeconds", "length"])
+    };
 }
 
-function providerSong(lines, name, ctx, durationSeconds) {
+function providerSong(lines, name, ctx, durationSeconds, metadata) {
     if (!lines || lines.length === 0) return null;
     var song = Lrc.finalizeLines(lines);
     if (!song || !song.lines || song.lines.length === 0) return null;
+    var meta = metadata || {};
     song.providerName = name;
     var duration = typeof durationSeconds === "number" && durationSeconds > 0
-            ? durationSeconds : (ctx.durS > 0 ? ctx.durS : 0);
+            ? durationSeconds : (typeof meta.duration === "number" ? meta.duration : 0);
     song.durMs = duration > 0 ? Math.round(duration * 1000) : 0;
+    if (typeof meta.title === "string" && meta.title !== "") song.matchTitle = meta.title;
+    if (typeof meta.artist === "string" && meta.artist !== "") song.matchArtist = meta.artist;
     return song;
 }
 
@@ -707,7 +790,7 @@ function liriQoToSong(body, ctx) {
             words: words
         });
     }
-    var song = providerSong(lines, "LiriQo", ctx);
+    var song = providerSong(lines, "LiriQo", ctx, 0, providerTrackInfo(body));
     if (song && root.provider) ctx.log("lyrics: LiriQo upstream " + root.provider);
     return song;
 }
@@ -755,7 +838,8 @@ function lrcmuxToSong(body, ctx) {
         });
     }
     var song = providerSong(lines, "LRCMux", ctx,
-            body.track && typeof body.track.duration === "number" ? body.track.duration : 0);
+            body.track && typeof body.track.duration === "number" ? body.track.duration : 0,
+            providerTrackInfo(body));
     if (song && body.meta && body.meta.source && body.meta.source.name)
         ctx.log("lyrics: LRCMux upstream " + body.meta.source.name);
     return song;
@@ -805,7 +889,7 @@ function lyricaToSong(body, ctx) {
             words: words
         });
     }
-    var song = providerSong(lines, "Lyrica", ctx);
+    var song = providerSong(lines, "Lyrica", ctx, 0, providerTrackInfo(data));
     if (song && data.source) ctx.log("lyrics: Lyrica upstream " + data.source);
     return song;
 }
@@ -845,7 +929,10 @@ function fetchSyncLRC(ctx, cb) {
         var song = lrc ? lrcTextToSong(lrc) : null;
         if (song) {
             song.providerName = "SyncLRC";
-            song.durMs = providerDurationMs(ctx);
+            var syncInfo = providerTrackInfo(body);
+            song.durMs = syncInfo.duration > 0 ? Math.round(syncInfo.duration * 1000) : 0;
+            if (syncInfo.title) song.matchTitle = syncInfo.title;
+            if (syncInfo.artist) song.matchArtist = syncInfo.artist;
             if (body.type && body.type !== "karaoke")
                 ctx.log("lyrics: SyncLRC returned " + body.type + " fallback");
         }
@@ -896,7 +983,7 @@ function syncLyricsToSong(body, ctx) {
         if (text !== "")
             lines.push({ t: lineStart, e: lineEnd, text: text, words: words.length >= 2 ? words : null });
     }
-    return providerSong(lines, "SyncLyrics API", ctx);
+    return providerSong(lines, "SyncLyrics API", ctx, 0, providerTrackInfo(body));
 }
 
 function fetchSyncLyrics(ctx, cb) {
@@ -925,7 +1012,10 @@ function fetchKaralyr(ctx, cb) {
                 ? lrcTextToSong(body.syncedLyrics) : null;
         if (song) {
             song.providerName = "Karalyr";
-            song.durMs = providerDurationMs(ctx);
+            var karaInfo = providerTrackInfo(body);
+            song.durMs = karaInfo.duration > 0 ? Math.round(karaInfo.duration * 1000) : 0;
+            if (karaInfo.title) song.matchTitle = karaInfo.title;
+            if (karaInfo.artist) song.matchArtist = karaInfo.artist;
             if (body.karalyr && body.karalyr.source)
                 ctx.log("lyrics: Karalyr revision from " + body.karalyr.source);
         }
@@ -949,17 +1039,20 @@ function lrcRedChooseHit(hits, ctx) {
         if (!h || !h.isrc) continue;
         var title = dmsSearchable(h.title);
         var artist = dmsSearchable(h.artist);
-        var score = 0;
-        if (title === wantTitle) score += 4;
-        else if (title.indexOf(wantTitle) !== -1 || wantTitle.indexOf(title) !== -1) score += 2;
+        var titleExact = dmsTitlesEquivalent(ctx.title, h.title);
+        var durationMatch = ctx.durS > 0 && typeof h.duration === "number"
+                && Math.abs(h.duration - ctx.durS) <= Math.max(3, ctx.durS * 0.01);
+        // Do not collapse "(A-Trak Remix)" into the original title during
+        // catalogue search. A measured duration match can verify an alias
+        // whose provider title omits the edition suffix.
+        if (!titleExact && dmsHasVersionTag(ctx.title) && !durationMatch) continue;
+        var score = titleExact ? 8 : 0;
+        if (title === wantTitle) score += 3;
+        else if (title.indexOf(wantTitle) !== -1 || wantTitle.indexOf(title) !== -1) score += 1;
         if (artist === wantArtist) score += 3;
         else if (artist.indexOf(wantArtist) !== -1 || wantArtist.indexOf(artist) !== -1) score += 1;
-        if (ctx.durS > 0 && typeof h.duration === "number") {
-            var gap = Math.abs(h.duration - ctx.durS);
-            if (gap <= 3) score += 2;
-            else if (gap <= 10) score += 1;
-            else score -= 4;
-        }
+        if (durationMatch) score += 4;
+        else if (ctx.durS > 0 && typeof h.duration === "number") score -= 4;
         if (score > bestScore) { best = h; bestScore = score; }
     }
     return bestScore > 0 ? best : null;
@@ -985,7 +1078,9 @@ function fetchLrcRed(ctx, cb) {
                 if (song) {
                     song.providerName = "lrc.red";
                     song.durMs = typeof track.duration === "number"
-                            ? Math.round(track.duration * 1000) : providerDurationMs(ctx);
+                            ? Math.round(track.duration * 1000) : 0;
+                    song.matchTitle = hit.title || "";
+                    song.matchArtist = hit.artist || "";
                     ctx.log("lyrics: lrc.red source credited (https://lrc.red)");
                 }
                 cb(song);
@@ -1004,9 +1099,29 @@ function fetchAmll(ctx, cb) {
         if (ctx.isStale()) return;
         var search = ok && resp ? safeJson(resp) : null;
         var items = search && search.data && search.data.items;
-        if (!items || !items.length || !items[0].id) { cb(null); return; }
-        // AMLL sorts matches by relevance; the first result is the best match.
-        var getUrl = "https://api.amll.dev/v1/lyrics/get?id=" + encodeURIComponent(items[0].id);
+        if (!items || !items.length) { cb(null); return; }
+
+        var selected = null, selectedInfo = null, bestScore = -1;
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (!item || !item.id) continue;
+            var info = providerTrackInfo(item);
+            if (!info.title && typeof item.musicName === "string") info.title = item.musicName;
+            var probe = { matchTitle: info.title, matchArtist: info.artist,
+                          durMs: info.duration > 0 ? Math.round(info.duration * 1000) : 0 };
+            if (dmsMetadataProblem(ctx, probe) !== "") continue;
+            var score = (info.title ? 4 : 0) + (info.artist ? 2 : 0)
+                      + (info.duration > 0 ? 2 : 0)
+                      + (info.title && dmsTitlesEquivalent(ctx.title, info.title) ? 4 : 0);
+            if (score > bestScore) {
+                selected = item;
+                selectedInfo = info;
+                bestScore = score;
+            }
+        }
+        if (!selected) { cb(null); return; }
+
+        var getUrl = "https://api.amll.dev/v1/lyrics/get?id=" + encodeURIComponent(selected.id);
         ctx.httpGet(getUrl, function (ok2, resp2) {
             if (ctx.isStale()) return;
             var body = ok2 && resp2 ? safeJson(resp2) : null;
@@ -1014,7 +1129,12 @@ function fetchAmll(ctx, cb) {
             var song = data && typeof data.lyrics === "string" ? ttmlToSong(data.lyrics) : null;
             if (song) {
                 song.providerName = "AMLL TTML DB";
-                song.durMs = providerDurationMs(ctx);
+                var amllInfo = providerTrackInfo(data);
+                song.durMs = amllInfo.duration > 0 ? Math.round(amllInfo.duration * 1000)
+                          : (selectedInfo.duration > 0 ? Math.round(selectedInfo.duration * 1000) : 0);
+                song.matchTitle = amllInfo.title || selectedInfo.title
+                        || (data.musicNames && data.musicNames.length ? data.musicNames[0] : "");
+                song.matchArtist = amllInfo.artist || selectedInfo.artist || "";
                 if (data.musicNames && data.musicNames.length)
                     ctx.log("lyrics: AMLL TTML DB matched " + data.musicNames[0]);
             }
@@ -1035,7 +1155,10 @@ function fetchLyricsDB(ctx, cb) {
         var song = ok ? ttmlToSong(unwrapTtml(resp)) : null;
         if (song) {
             song.providerName = "LyricsDB";
-            song.durMs = providerDurationMs(ctx);
+            var dbInfo = providerTrackInfo(safeJson(resp));
+            song.durMs = dbInfo.duration > 0 ? Math.round(dbInfo.duration * 1000) : 0;
+            if (dbInfo.title) song.matchTitle = dbInfo.title;
+            if (dbInfo.artist) song.matchArtist = dbInfo.artist;
         }
         cb(song);
     });
@@ -1098,6 +1221,63 @@ function dmsSearchable(text) {
         .replace(/[^0-9A-Za-z\u00C0-\u00FF\u0100-\u04FF\u0590-\u08FF\u0900-\u9FFF\uA000-\uFFDC]+/g, " ")
         .replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
 }
+
+// Unlike dmsSearchable (used to compare lyric lines), title identity must keep
+// edition suffixes. Removing "(A-Trak Remix)" here silently merges the remix
+// with the original recording.
+function dmsTitleKey(text) {
+    return String(text || "").toLowerCase()
+        .replace(/[()[\]{}（）【】]/g, " ")
+        .replace(/[\u2000-\u206F\u2100-\u214F\u2190-\u2BFF\u2E00-\u2E7F\u3000-\u303F\uFE10-\uFE6F\uFF01-\uFF20\uFF3B-\uFF40\uFF5B-\uFF65]+/g, " ")
+        .replace(/[^0-9A-Za-z\u00C0-\u00FF\u0100-\u04FF\u0590-\u08FF\u0900-\u9FFF\uA000-\uFFDC]+/g, " ")
+        .replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
+}
+
+function dmsTitlesEquivalent(a, b) {
+    var aa = dmsTitleKey(a).split(" ");
+    var bb = dmsTitleKey(b).split(" ");
+    if (aa.length === 1 && aa[0] === "") return false;
+    if (aa.length !== bb.length) return false;
+    for (var i = 0; i < aa.length; i++) {
+        if (aa[i] === bb[i]) continue;
+        // Streaming catalogues occasionally pluralize a title word.
+        if (aa[i].length > 3 && bb[i].length > 3
+                && (aa[i] + "s" === bb[i] || bb[i] + "s" === aa[i])) continue;
+        return false;
+    }
+    return true;
+}
+
+function dmsHasVersionTag(title) {
+    return /\b(?:remix(?:ed)?|radio\s+edit|radio\s+version|dub|club\s+mix|extended\s+mix|original\s+mix|dance\s+mix|edit|instrumental|live|acoustic|remaster(?:ed)?|version|demo|sped\s*up|slowed|nightcore)\b/i.test(String(title || ""));
+}
+
+function dmsArtistCompatible(want, got) {
+    var a = dmsTitleKey(want), b = dmsTitleKey(got);
+    return a !== "" && b !== "" && (a === b || a.indexOf(b) !== -1 || b.indexOf(a) !== -1);
+}
+
+// A versioned request must be backed by the same version title or by a
+// catalogue duration that genuinely matches the playing file. Providers must
+// never claim the player's duration when their own response omits it.
+function dmsMetadataProblem(ctx, song) {
+    if (!song) return "missing";
+    var durationVerified = ctx.durS > 0 && song.durMs > 0
+            && dmsProblemWith(ctx, song) === "";
+    if (ctx.durS > 0 && song.durMs > 0 && !durationVerified)
+        return "duration mismatch";
+    if (song.matchArtist && ctx.artist
+            && !dmsArtistCompatible(ctx.artist, song.matchArtist)) return "artist mismatch";
+    var requestedVersioned = dmsHasVersionTag(ctx.title);
+    var candidateVersioned = dmsHasVersionTag(song.matchTitle);
+    if (song.matchTitle && ctx.title && !dmsTitlesEquivalent(ctx.title, song.matchTitle)
+            && !durationVerified && (requestedVersioned || candidateVersioned))
+        return "track/version mismatch";
+    if (requestedVersioned && !song.matchTitle && !durationVerified)
+        return "version not verified";
+    return "";
+}
+
 
 function dmsTimedCues(song) {
     if (!song || !song.lines) return [];
@@ -1169,6 +1349,12 @@ function dmsPick(ctx, results) {
     for (var i = 0; i < results.length; i++) {
         var song = results[i];
         if (!song || !song.lines || song.lines.length === 0) continue;
+        var metadataProblem = dmsMetadataProblem(ctx, song);
+        if (metadataProblem !== "") {
+            ctx.log("lyrics: rejected " + (song.providerName || "provider")
+                    + " (" + metadataProblem + ")");
+            continue;
+        }
         var cues = dmsTimedCues(song);
         candidates.push({
             priority: i,
@@ -1298,8 +1484,9 @@ function fetchAll(ctx, cb) {
             ctx.log("lyrics: late " + name + " answer dropped (word-level already active)");
             return;
         }
-        if (dmsProblemWith(ctx, song) !== "") {
-            ctx.log("lyrics: late " + name + " answer rejected (timed for another cut)");
+        var metadataProblem = dmsMetadataProblem(ctx, song);
+        if (metadataProblem !== "") {
+            ctx.log("lyrics: late " + name + " answer rejected (" + metadataProblem + ")");
             return;
         }
         if (winner && song.wordSync !== true) {
