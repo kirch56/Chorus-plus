@@ -1298,9 +1298,11 @@ PlasmoidItem {
             // adjustments from delegate relayouts must not (DMS watches
             // isUserScrolling || dragging for the same reason).
             onDraggingChanged: if (lv.dragging) ts.browse()
-            onWheel: function (wheel) {
-                ts.browse();
-                wheel.accepted = false;   // let the view scroll natively
+            // Flickable/ListView have no onWheel signal — a WheelHandler
+            // scrolls the view itself and tells us a real wheel event came.
+            WheelHandler {
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                onWheel: ts.browse()
             }
         }
 
