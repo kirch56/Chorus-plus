@@ -604,6 +604,8 @@ function lrclibRecordToSong(rec) {
     if (!song || song.lines.length === 0) return null;
     song.providerName = "LRCLIB";
     song.durMs = (typeof rec.duration === "number" && rec.duration > 0) ? Math.round(rec.duration * 1000) : 0;
+    if (typeof rec.trackName === "string") song.matchTitle = rec.trackName;
+    if (typeof rec.artistName === "string") song.matchArtist = rec.artistName;
     return song;
 }
 
@@ -633,14 +635,25 @@ function fetchLrclib(ctx, cb) {
             if (ok2 && resp2) {
                 try {
                     var arr = JSON.parse(resp2);
-                    // prefer a word-synced record, then the first synced one
-                    var wordRec = null, syncRec = null;
+                    // Prefer the closest recording, not merely the first
+                    // word-synced result. Album editions, remixes and radio
+                    // edits often share a base title but have different lengths.
+                    var bestScore = -1;
                     for (var i = 0; i < arr.length; i++) {
-                        if (!wordRec && arr[i].hasWordSync && arr[i].lyricsfile)
-                            wordRec = arr[i];
-                        if (!syncRec && arr[i].syncedLyrics) syncRec = arr[i];
+                        var candidate = arr[i];
+                        if (!candidate || !(candidate.instrumental === true
+                                || candidate.hasWordSync || candidate.syncedLyrics)) continue;
+                        var candidateSong = lrclibRecordToSong(candidate);
+                        if (!candidateSong || dmsMetadataProblem(ctx, candidateSong) !== "") continue;
+                        var score = (candidateSong.wordSync ? 8 : 0)
+                                  + (candidateSong.matchTitle ? 4 : 0)
+                                  + (candidateSong.matchArtist ? 2 : 0)
+                                  + (candidateSong.durMs > 0 ? 2 : 0);
+                        if (score > bestScore) {
+                            best = candidate;
+                            bestScore = score;
+                        }
                     }
-                    best = wordRec || syncRec || null;
                 } catch (e) {}
             }
             cb(best ? lrclibRecordToSong(best) : null);
@@ -653,18 +666,51 @@ function fetchLrclib(ctx, cb) {
 // The providers below intentionally share the widget's existing normalization
 // model. All times in this file are milliseconds unless noted otherwise.
 
-function providerDurationMs(ctx) {
-    return ctx.durS > 0 ? Math.round(ctx.durS * 1000) : 0;
+// Extract only metadata actually returned by a lyrics catalogue. Never
+// substitute the player's duration for a missing catalogue duration: doing
+// that makes an original recording look like a verified remix match.
+function providerTrackInfo(body) {
+    var root = body || {};
+    var track = root.track && typeof root.track === "object" ? root.track : {};
+    var data = root.data && typeof root.data === "object" ? root.data : {};
+    var nested = data.track && typeof data.track === "object" ? data.track : {};
+    function pickString(objects, keys) {
+        for (var i = 0; i < objects.length; i++)
+            for (var j = 0; j < keys.length; j++) {
+                var value = objects[i] && objects[i][keys[j]];
+                if (typeof value === "string" && value.trim() !== "") return value.trim();
+            }
+        return "";
+    }
+    function pickNumber(objects, keys) {
+        for (var i = 0; i < objects.length; i++)
+            for (var j = 0; j < keys.length; j++) {
+                var value = objects[i] && objects[i][keys[j]];
+                if (typeof value === "number" && isFinite(value) && value > 0)
+                    return value > 10000 ? value / 1000 : value;
+            }
+        return 0;
+    }
+    var objects = [root, track, data, nested];
+    return {
+        title: typeof root.track === "string" ? root.track
+             : pickString(objects, ["trackName", "title", "name", "musicName", "songName"]),
+        artist: pickString(objects, ["artist", "artistName", "artist_name", "singer"]),
+        duration: pickNumber(objects, ["duration", "durationSeconds", "length"])
+    };
 }
 
-function providerSong(lines, name, ctx, durationSeconds) {
+function providerSong(lines, name, ctx, durationSeconds, metadata) {
     if (!lines || lines.length === 0) return null;
     var song = Lrc.finalizeLines(lines);
     if (!song || !song.lines || song.lines.length === 0) return null;
+    var meta = metadata || {};
     song.providerName = name;
     var duration = typeof durationSeconds === "number" && durationSeconds > 0
-            ? durationSeconds : (ctx.durS > 0 ? ctx.durS : 0);
+            ? durationSeconds : (typeof meta.duration === "number" ? meta.duration : 0);
     song.durMs = duration > 0 ? Math.round(duration * 1000) : 0;
+    if (typeof meta.title === "string" && meta.title !== "") song.matchTitle = meta.title;
+    if (typeof meta.artist === "string" && meta.artist !== "") song.matchArtist = meta.artist;
     return song;
 }
 
