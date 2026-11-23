@@ -48,6 +48,7 @@ https://github.com/user-attachments/assets/aff481a7-01e9-43f6-9053-7931b17a784e
 ## Features
 
 - **Synced lyrics** raced across **fourteen providers** — Better Lyrics, Unison, LyricsPlus, LRCMux, LiriQo, Lyrica, SyncLyrics API, AMLL TTML DB, lrc.red, LyricsDB, Karalyr, KuGou, LRCLIB and YouTube Music — with DMS-style scoring: the best answer wins, not just the first one.
+- **Background vocals**: TTML `x-bg` backing vocals appear beneath the lead lyric in a smaller synchronized row, with their own word/syllable timing.
 - **Word-by-word sync**: uses word/syllable timing from Better Lyrics, Unison, LyricsPlus, LRCMux, LiriQo, Lyrica, SyncLyrics, AMLL, lrc.red, LyricsDB, Karalyr and LRCLIB Lyricsfiles when available; otherwise it keeps line-synced lyrics. Words light up as they are sung — an Apple Music style karaoke sweep in the panel and popup. Toggle it under **Look & Feel → Animation**.
 - **DMS-style popup** (ported from [Dux Modular Shell](https://github.com/AvengeMedia/DankMaterialShell)): scrolling lyrics transcript on the left — the sung line centred, big and sweeping word by word, click any line to seek, "Follow playback" after scrolling around — and the album cover with the track on the right. A lyrics button hides the text and hands the space to the cover.
 - Works with **any media player**: Spotify, YouTube Music, VLC, etc.
