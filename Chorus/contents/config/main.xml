@@ -99,5 +99,11 @@
       <default>kugou</default>
       <default>youtube</default>
     </entry>
+    <entry name="wordSyncPriority" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="wordAnimation" type="Bool">
+      <default>true</default>
+    </entry>
   </group>
 </kcfg>
