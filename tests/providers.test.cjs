@@ -6,9 +6,9 @@ const assert = require("node:assert/strict");
 
 const providerPath = path.join(__dirname, "..", "Chorus", "contents", "code", "providers.js");
 const lrcPath = path.join(__dirname, "..", "Chorus", "contents", "code", "lrc.js");
-const stripQmlDirectives = source => source.split("\\n")
+const stripQmlDirectives = source => source.split("\n")
     .filter(line => !line.startsWith(".pragma") && !line.startsWith(".import"))
-    .join("\\n");
+    .join("\n");
 const lrcSandbox = vm.createContext({});
 new vm.Script(stripQmlDirectives(fs.readFileSync(lrcPath, "utf8")),
     { filename: "lrc.js" }).runInContext(lrcSandbox);
@@ -166,18 +166,9 @@ test("reads provider track metadata without substituting the player's duration",
 });
 
 test("SyncLRC TTML removes background, translation and romanization tracks", () => {
-    const ttml = `<tt xmlns="http://www.w3.org/ns/ttml"
-        xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
-      <body><div><p begin="00:00:01.000" end="00:00:03.000">
-        <span begin="00:00:01.000" end="00:00:01.200">I</span>
-        <span begin="00:00:01.200" end="00:00:01.500">don't</span>
-        <span begin="00:00:01.500" end="00:00:01.800">want</span>
-        <span begin="00:00:01.800" end="00:00:02.000">this</span>
-        <span ttm:role="x-bg"><span begin="00:00:02.100">中文背景歌词</span></span>
-        <span ttm:role="x-translation"><span begin="00:00:02.200">中文翻译</span></span>
-        <span ttm:role="x-roman"><span begin="00:00:02.300">zhong wen fan yi</span></span>
-      </p></div></body>
-    </tt>`;
+    // Adjacent word spans deliberately contain no whitespace, like the
+    // flattened upstream output. Non-lead vocal roles must disappear.
+    const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body><div><p begin="00:00:01.000" end="00:00:03.000"><span begin="00:00:01.000" end="00:00:01.200">I</span><span begin="00:00:01.200" end="00:00:01.500">don't</span><span begin="00:00:01.500" end="00:00:01.800">want</span><span begin="00:00:01.800" end="00:00:02.000">this</span><span ttm:role="x-bg"><span begin="00:00:02.100">中文背景歌词</span></span><span ttm:role="x-translation"><span begin="00:00:02.200">中文翻译</span></span><span ttm:role="x-roman"><span begin="00:00:02.300">zhong wen fan yi</span></span></p></div></body></tt>`;
     const song = sandbox.ttmlToSong(ttml);
     assert.ok(song);
     assert.equal(song.lines.length, 1);
