@@ -55,7 +55,7 @@ function ttmlIsNonLeadRole(tag) {
     if (!m) return false;
     var roles = m[1].split(/\s+/);
     for (var i = 0; i < roles.length; i++)
-        if (/^(?:x-translation|x-roman|x-transliteration|translation|romanization|transliteration)$/i.test(roles[i]))
+        if (/^(?:x-bg|x-background|background|background-vocal|x-translation|x-roman|x-transliteration|translation|romanization|transliteration)$/i.test(roles[i]))
             return true;
     return false;
 }
@@ -97,9 +97,35 @@ function flattenTtmlSpans(s) {
     return out;
 }
 
-// Word-level spans inside a TTML <p>: <span begin=".." end="..">word</span>.
-// Whitespace between spans carries the spaces between words, so it is kept
-// (appended to the preceding word) and the rendered line matches the source.
+// TTML karaoke may store consecutive word spans with no literal whitespace
+// between them. Preserve explicit spaces; otherwise reconstruct normal English
+// word boundaries without splitting contractions or punctuation.
+function ttmlNeedsWordSpace(previous, next) {
+    if (!previous || !next || /\s$/.test(previous) || /^\s/.test(next)) return false;
+    if (/['’‘-]$/.test(previous) || /^['’‘-]/.test(next)) return false;
+    var left = previous.charAt(previous.length - 1);
+    var right = next.charAt(0);
+    return /[A-Za-z0-9,.;:!?…)\]]/.test(left)
+        && /[A-Za-z0-9("'“‘\[]/.test(right)
+        && (/[A-Za-z0-9]/.test(left) || /[,.;:!?…)\]]/.test(left));
+}
+
+function ttmlSpaceWordTokens(words) {
+    for (var i = 1; i < words.length; i++)
+        if (ttmlNeedsWordSpace(words[i - 1].text, words[i].text))
+            words[i - 1].text += " ";
+}
+
+function ttmlJoinWordText(words) {
+    var out = "";
+    for (var i = 0; i < words.length; i++)
+        out += String(words[i].text || "");
+    return out.replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
+}
+
+// Word-level spans inside a TTML <p>. Explicit whitespace is retained;
+// missing boundaries between timed English words are reconstructed. Translation,
+// romanization and background spans have already been filtered.
 function parseTTMLWords(inner) {
     var flat = flattenTtmlSpans(String(inner));
     var re = /<span\b([^>]*)>([\s\S]*?)<\/span>([\s\S]*?)(?=<span\b|$)/g;
@@ -109,18 +135,17 @@ function parseTTMLWords(inner) {
         var et = /\bend\s*=\s*["']([^"']+)["']/.exec(m[1]);
         var t = bt ? parseTTMLTime(bt[1]) : -1;
         var e = et ? parseTTMLTime(et[1]) : 0;
-        var text = m[2].replace(/<[^>]*>/g, "");
+        var text = m[2].replace(/<[^>]*>/g, "")
+                   .replace(/\{agent:[^}]*\}/gi, "").replace(/\{bg\}/gi, "");
         var gap = m[3].replace(/<[^>]*>/g, "");
         if (t < 0 || text.replace(/\s/g, "") === "") continue;
         if (gap !== "" && !/\S/.test(gap)) text += gap;
         words.push({ t: t, e: e > t ? e : 0, text: text });
     }
-    // Echo groups like "(My conscience)" are glued to the previous word in
-    // the source TTML (no whitespace before the group's span); the lyric
-    // text always spaces them off.
     for (var i = 1; i < words.length; i++)
         if (/^[(（]/.test(words[i].text) && !/\s$/.test(words[i - 1].text))
             words[i - 1].text += " ";
+    ttmlSpaceWordTokens(words);
     return words.length >= 2 ? words : null;
 }
 
@@ -134,10 +159,9 @@ function ttmlToSong(ttml) {
     var m;
     while ((m = re.exec(String(ttml))) !== null) {
         var open = m[0].slice(0, m[0].indexOf(">"));
-        // Some TTML documents represent translations as separate paragraphs.
-        // They share timestamps with the original, so accepting them creates
-        // stacked multilingual lines in players that only show one lyric lane.
-        if (ttmlIsNonLeadRole(open)) continue;
+        // Role-marked non-lead paragraphs are separate lyric lanes. Some
+        // SyncLRC fallback TTML may also carry its {bg} marker as plain text.
+        if (ttmlIsNonLeadRole(open) || /\{bg\}/i.test(m[2])) continue;
         var t = parseTTMLTime(m[1]);
         var endM = /\bend\s*=\s*["']([^"']+)["']/.exec(open);
         var e = endM ? parseTTMLTime(endM[1]) : 0;
@@ -147,8 +171,10 @@ function ttmlToSong(ttml) {
         // Use the filtered span tree here too, so translation text cannot
         // re-enter the visible line after its word timings were discarded.
         var leadInner = flattenTtmlSpans(m[2]);
-        var text = leadInner.replace(/<[^>]*>/g, "").replace(/([^\s(（])\(/g, "$1 (")
-                   .replace(/\s+/g, " ").trim();
+        var text = words ? ttmlJoinWordText(words)
+                   : leadInner.replace(/<[^>]*>/g, "")
+                     .replace(/\{agent:[^}]*\}/gi, "").replace(/\{bg\}/gi, "")
+                     .replace(/([^\s(（])\(/g, "$1 (").replace(/\s+/g, " ").trim();
         if (t < 0 || text === "") continue;
         out.push({ t: t, e: e > t ? e : 0, text: text, words: words });
     }
@@ -907,14 +933,14 @@ function fetchLyrica(ctx, cb) {
     });
 }
 
-// SyncLRC: request its native Enhanced LRC response instead of TTML.
-// The API converts its internal TTML to LRC itself and filters non-lead vocal
-// roles before rendering. Parsing that output avoids accidentally flattening
-// nested translation/romanization markup into the lead-vocal text.
+// SyncLRC: request TTML, not flattened LRC. TTML preserves vocal roles
+// (translation, romanization and background) so the adapter can remove those
+// tracks before rendering only the lead vocal. Its karaoke LRC also loses
+// separators between adjacent timed word spans and cannot be parsed safely.
 function fetchSyncLRC(ctx, cb) {
     var url = "https://api.synclrc.dev/lyrics?track=" + encodeURIComponent(ctx.title)
             + "&artist=" + encodeURIComponent(ctx.artist)
-            + "&type=karaoke&format=lrc";
+            + "&type=karaoke&format=ttml";
     if (ctx.album) url += "&album=" + encodeURIComponent(ctx.album);
     if (ctx.durS > 0) url += "&duration=" + ctx.durS;
     ctx.httpGet(url, function (ok, resp) {
@@ -922,11 +948,9 @@ function fetchSyncLRC(ctx, cb) {
         var body = ok && resp ? safeJson(resp) : null;
         if (!body) { cb(null); return; }
 
-        // With an explicit format the API returns { lyrics, type, format }.
-        // Keep compatibility with its default { karaoke, synced, plain } shape.
-        var lrc = typeof body.lyrics === "string" ? body.lyrics
-                : (typeof body.karaoke === "string" ? body.karaoke : null);
-        var song = lrc ? lrcTextToSong(lrc) : null;
+        var ttml = typeof body.lyrics === "string" ? body.lyrics
+                 : (typeof body.ttml === "string" ? body.ttml : null);
+        var song = ttml ? ttmlToSong(unwrapTtml(ttml)) : null;
         if (song) {
             song.providerName = "SyncLRC";
             var syncInfo = providerTrackInfo(body);
