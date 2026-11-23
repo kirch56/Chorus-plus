@@ -1,9 +1,11 @@
 // Lyrics providers, DMS-style (Dux Modular Shell / dux-go lyrics client).
 // Providers: Better Lyrics, Unison, LyricsPlus, KuGou, LRCLIB, YouTube Music.
-// Every enabled provider is raced at once and the best answer wins:
+// Every provider is raced at once and the best answer wins (ctx.enabled may
+// still restrict the set, but the widget no longer exposes a picker):
 //   ctx = {
 //     title, artist, album, durS,      // track metadata, durS = duration in seconds (<= 0 if unknown)
-//     enabled,                         // array of provider ids to race, priority order
+//     enabled,                         // optional array of provider ids to race, priority order;
+//                                      // undefined or empty = race every provider
 //     later(ms, fn),                   // one-shot callback scheduler (QML Timer)
 //     httpGet(url, cb),                // cb(ok, body)
 //     httpPostJson(url, body, cb),     // cb(ok, body)
@@ -777,15 +779,17 @@ function dmsPick(ctx, results) {
     return best.song;
 }
 
-// Tries all enabled providers at once, DMS-style, and calls cb with the best
-// answer (or null). The wait for the stragglers after the first match is
+// Tries every provider at once, DMS-style, and calls cb with the best answer
+// (or null). ctx.enabled (optional) restricts the race; undefined or empty
+// means all of them. The wait for the stragglers after the first match is
 // bounded by DMS_SYNC_GRACE_MS, the whole race by DMS_LOOKUP_TIMEOUT_MS.
 // ctx.later(ms, fn) schedules a one-shot callback (a QML Timer from the widget).
 function fetchAll(ctx, cb) {
-    var enabled = ctx.enabled || [];
+    var enabled = ctx.enabled;
     var chain = [];
     for (var i = 0; i < PROVIDERS.length; i++)
-        if (enabled.indexOf(PROVIDERS[i].id) !== -1) chain.push(PROVIDERS[i]);
+        if (!enabled || enabled.length === 0
+                || enabled.indexOf(PROVIDERS[i].id) !== -1) chain.push(PROVIDERS[i]);
     if (chain.length === 0) { cb(null); return; }
 
     var results = new Array(chain.length);
@@ -810,6 +814,9 @@ function fetchAll(ctx, cb) {
 
     function got(idx, song) {
         if (finished || ctx.isStale()) return;
+        // stamp the winner's source so the UI can credit it ("Lyrics from X")
+        if (song && song.lines && song.lines.length > 0 && !song.providerName)
+            song.providerName = chain[idx].name;
         results[idx] = song;
         answered++;
         if (song && song.lines && song.lines.length > 0) {

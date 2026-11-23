@@ -19,8 +19,8 @@ KCM.SimpleKCM {
     property alias cfg_hideWhenIdle: hideIdleCheck.checked
     property alias cfg_showVolumeBar: volumeCheck.checked
     property int cfg_lyricsOffsetMs
-    property var cfg_extraProviders: []
     property alias cfg_popupLyrics: popupLyricsCheck.checked
+    property int cfg_popupHeroH
     property alias cfg_wordAnimation: wordAnimCheck.checked
 
     property var fontDialog: null
@@ -30,22 +30,6 @@ KCM.SimpleKCM {
     property var fontDialogField: null
     property int nextUid: 1
     property int lastBarWidth: 420
-
-    // Lyrics providers, in DMS's builtin priority order (Dux Modular Shell).
-    readonly property var providerIds: ["betterlyrics", "unison", "lyricsplus", "kugou", "lrclib", "youtube"]
-    readonly property var providerNames: ["Better Lyrics", "Unison", "LyricsPlus", "KuGou", "LRCLIB", "YouTube Music"]
-
-    function providerEnabled(pid) {
-        var arr = cfg_extraProviders || [];
-        return arr.indexOf(pid) !== -1;
-    }
-    function setProviderEnabled(pid, on) {
-        var arr = (cfg_extraProviders || []).slice();
-        var i = arr.indexOf(pid);
-        if (on && i === -1) arr.push(pid);
-        if (!on && i !== -1) arr.splice(i, 1);
-        cfg_extraProviders = arr;
-    }
 
     ListModel { id: fallbackModel }
 
@@ -324,24 +308,6 @@ KCM.SimpleKCM {
 
         Item { Kirigami.FormData.isSection: true }
 
-        QQC2.Label {
-            Kirigami.FormData.label: i18n("Lyrics providers:")
-            text: i18n("Raced at once, DMS style; the best answer wins. Priority goes to lyrics whose length matches the track, then word timings, then the sources whose timing agrees with the others — the order above decides among equal answers:")
-            font: Kirigami.Theme.smallFont
-            opacity: 0.7
-            wrapMode: Text.WordWrap
-            Layout.fillWidth: true
-        }
-        Repeater {
-            model: page.providerIds.length
-            delegate: QQC2.CheckBox {
-                readonly property string pid: page.providerIds[index]
-                text: page.providerNames[index]
-                Component.onCompleted: checked = page.providerEnabled(pid)
-                onToggled: page.setProviderEnabled(pid, checked)
-            }
-        }
-
         QQC2.CheckBox {
             id: popupLyricsCheck
             Kirigami.FormData.label: i18n("Popup:")
@@ -349,6 +315,22 @@ KCM.SimpleKCM {
         }
         QQC2.Label {
             text: i18n("The lyrics button in the popup hides or brings back the transcript; this is the default it starts with.")
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+        QQC2.SpinBox {
+            id: popupHeroSpin
+            Kirigami.FormData.label: i18n("Popup height:")
+            from: 10; to: 40; stepSize: 1
+            editable: true
+            textFromValue: function (v) { return i18n("%1 grid units").arg(v) }
+            valueFromText: function (t) { return parseInt(t) || 15 }
+            Component.onCompleted: value = Math.max(10, Math.min(40, page.cfg_popupHeroH || 15))
+        }
+        QQC2.Label {
+            text: i18n("The transcript text grows or shrinks so every lyric line fits the popup height you pick.")
             font: Kirigami.Theme.smallFont
             opacity: 0.7
             wrapMode: Text.WordWrap
@@ -383,5 +365,9 @@ KCM.SimpleKCM {
     Connections {
         target: lyricsOffsetSpin
         function onValueChanged() { if (page.ready) page.cfg_lyricsOffsetMs = lyricsOffsetSpin.value; }
+    }
+    Connections {
+        target: popupHeroSpin
+        function onValueChanged() { if (page.ready) page.cfg_popupHeroH = popupHeroSpin.value; }
     }
 }

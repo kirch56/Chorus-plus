@@ -22,11 +22,15 @@ PlasmoidItem {
         model: mpris
         delegate: QtObject {
             readonly property int idx: index
-            readonly property string matchText:
-                (String(model.identity || "") + " " + (String(model.desktopEntry || ""))).toLowerCase()
+            readonly property string identity: String(model.identity || "")
+            readonly property string entry: String(model.desktopEntry || "")
+            readonly property string key:
+                (identity !== "" ? identity : entry).toLowerCase()
+            readonly property string matchText: (identity + " " + entry).toLowerCase()
             readonly property bool matches: root.matchesFilter(matchText)
             function claim() {
-                if (matches && !root.playerMatches && mpris.currentIndex !== idx)
+                if (matches && !root.playerMatches && root.manualKey === ""
+                        && mpris.currentIndex !== idx)
                     mpris.currentIndex = idx;
             }
             onMatchesChanged: claim()
@@ -35,7 +39,9 @@ PlasmoidItem {
             Component.onDestruction: root.playersRevision++
             readonly property Connections conn: Connections {
                 target: root
-                function onPlayerMatchesChanged() { if (!root.playerMatches) claim(); }
+                function onPlayerMatchesChanged() {
+                    if (!root.playerMatches && root.manualKey === "") claim();
+                }
             }
         }
     }
@@ -56,6 +62,38 @@ PlasmoidItem {
                .toLowerCase().indexOf(token) !== -1;
     }
 
+    // Popup "sound source" picker: which media app this widget controls.
+    readonly property string currentPlayerName: player
+        ? String(player.identity || player.desktopEntry || "") : ""
+    readonly property string currentPlayerIcon:
+        player && String(player.desktopEntry || "") !== ""
+        ? String(player.desktopEntry).replace(/\.desktop$/, "") : "multimedia-player"
+    property bool pickerOpen: false
+    function selectPlayer(key, idx) {
+        pickerOpen = false;
+        manualKey = String(key || "").toLowerCase();
+        if (idx >= 0 && mpris.currentIndex !== idx) mpris.currentIndex = idx;
+    }
+    function clearPlayerPick() {
+        pickerOpen = false;
+        manualKey = "";
+    }
+    // Re-claim the manually picked player when the MPRIS list churns; give up
+    // on the pick once its app is gone.
+    function applyManualPlayer() {
+        if (manualKey === "") return;
+        for (var i = 0; i < playerScan.count; i++) {
+            var o = playerScan.objectAt(i);
+            if (o && o.key === manualKey) {
+                if (mpris.currentIndex !== i) mpris.currentIndex = i;
+                return;
+            }
+        }
+        manualKey = "";
+    }
+    onPlayersRevisionChanged: applyManualPlayer()
+    onExpandedChanged: pickerOpen = false
+
     readonly property var player: mpris.currentPlayer
     readonly property var cfgMatchList: {
         var mode = Plasmoid.configuration.appMode;
@@ -74,8 +112,19 @@ PlasmoidItem {
             if (text.indexOf(cfgMatchList[i]) !== -1) return true;
         return false;
     }
+    // The player the user picked in the popup source menu ("" = auto claim by
+    // the app filter). A picked player always wins while it is alive.
+    property string manualKey: ""
+    readonly property string currentPlayerKey: {
+        if (!player) return "";
+        var id = String(player.identity || "");
+        if (id === "") id = String(player.desktopEntry || "");
+        return id.toLowerCase();
+    }
+    readonly property bool manualActive: manualKey !== "" && currentPlayerKey === manualKey
     readonly property bool playerMatches: {
         if (!player) return false;
+        if (manualActive) return true;
         return matchesFilter(((player.identity || "") + " " + (player.desktopEntry || "")).toLowerCase());
     }
     readonly property bool isPlaying: playerMatches && player.playbackStatus === Mpris.PlaybackStatus.Playing
@@ -389,9 +438,9 @@ PlasmoidItem {
         t.start();
     }
 
-    // Fetch like DMS: every enabled provider is raced at once and the best
-    // answer wins (see providers.js fetchAll / dmsPick). Priority order is
-    // DMS's builtin order: Better Lyrics, Unison, LyricsPlus, KuGou, LRCLIB,
+    // Fetch like DMS: every provider is raced at once and the best answer
+    // wins (see providers.js fetchAll / dmsPick). Priority order is DMS's
+    // builtin order: Better Lyrics, Unison, LyricsPlus, KuGou, LRCLIB,
     // YouTube Music.
     function fetchLyrics() {
         var key = songKey;
@@ -406,7 +455,6 @@ PlasmoidItem {
             artist: trackArtist,
             album: trackAlbum,
             durS: durS,
-            enabled: Plasmoid.configuration.extraProviders || [],
             later: root.later,
             httpGet: httpGet,
             httpPostJson: httpPostJson,
@@ -1110,11 +1158,22 @@ PlasmoidItem {
         id: ts
 
         readonly property var items: root.lyricItems
-        readonly property real leadPx: Math.round(Math.max(Kirigami.Units.gridUnit * 1.1,
+        readonly property real basePx: Math.round(Math.max(Kirigami.Units.gridUnit * 1.1,
             Math.min(Kirigami.Units.gridUnit * 1.9, ts.height / 12, ts.width / 11)))
+        // Auto-fitted font: the fit pass walks the size range so every
+        // transcript row fits the popup height the user picked. Short lyrics
+        // grow, long ones shrink. Falls back to basePx before the first pass.
+        property real fitPx: 0
+        // true when every row fits the view at the fitted size (no scrolling)
+        property bool fitAll: false
+        readonly property real leadPx: ts.fitPx > 0 ? Math.round(ts.fitPx) : ts.basePx
         readonly property real breakSize: Math.round(leadPx * 1.2)
-        readonly property real endPadding: Math.max(0, ts.height / 2
-            - (ts.leadPx * 1.45 + Kirigami.Units.smallSpacing * 2) / 2)
+        // DMS half-view padding centres the active row while scrolling; once
+        // the whole transcript fits, small pads keep every line on screen
+        readonly property real endPadding: ts.fitAll
+            ? Math.round(Kirigami.Units.gridUnit * 0.5)
+            : Math.max(0, ts.height / 2
+                - (ts.leadPx * 1.45 + Kirigami.Units.smallSpacing * 2) / 2)
         property bool following: true
         property int centre: -1
         property real now: 0
@@ -1124,6 +1183,7 @@ PlasmoidItem {
         Component.onCompleted: {
             ts.now = root.nowMs();
             ts.centre = centreFor(ts.now);
+            ts.updateFit();
         }
 
         // the promoted row's sweep needs a per-frame clock; it keeps running
@@ -1136,6 +1196,74 @@ PlasmoidItem {
 
         function centreFor(at) {
             return Lrc.centreItem(ts.items, at, root.followIdx);
+        }
+
+        // Popup-fit search: pick the largest transcript font (scaled by the
+        // user's font scale) whose every row still fits the view height.
+        // The cost model mirrors LyricRow's real layout via the same
+        // measure/Lrc.partRows pipeline itemHeightAt uses.
+        function fitBudget() {
+            // everything-visible budget: the small pads endPadding uses in
+            // fit mode (gridUnit total), minus a rounding margin for
+            // estimate drift against the real Text metrics
+            return ts.height - Kirigami.Units.gridUnit - 6;
+        }
+        function fitCost(px) {
+            var total = 0;
+            var actPx = Math.round(px);
+            var inactPx = Math.round(px * 0.8);
+            var n = ts.items.length;
+            for (var i = 0; i < n; i++) {
+                var it = ts.items[i];
+                if (it.kind === "break") {
+                    total += Math.ceil(px * 1.2) + Kirigami.Units.smallSpacing * 2;
+                    continue;
+                }
+                var line = root.lines[it.line];
+                if (!line) continue;
+                var promoted = i === Math.max(0, ts.centre);
+                var fpx = promoted ? actPx : inactPx;
+                measure.font.pixelSize = fpx;
+                measure.font.weight = promoted ? Font.Bold : Font.DemiBold;
+                var rows = Lrc.partRows({ text: line.text, words: root.lineWords(it.line),
+                                          t: line.t, e: line.e }, ts.width, function (s) {
+                    measure.text = s;
+                    return measure.advanceWidth;
+                });
+                total += rows.length * Math.ceil(fpx * 1.45) + Kirigami.Units.smallSpacing * 2;
+            }
+            return total + Kirigami.Units.smallSpacing * Math.max(0, n - 1);
+        }
+        function updateFit() {
+            var n = ts.items.length;
+            if (n === 0 || ts.width <= 0 || ts.height <= 0) {
+                ts.fitPx = 0;
+                ts.fitAll = false;
+                return;
+            }
+            var fs = Number(Plasmoid.configuration.fontScale) || 1.0;
+            var lo = Math.max(9, Math.round(Kirigami.Units.gridUnit * 0.6 * fs));
+            var hi = Math.max(lo + 1, Math.round(ts.basePx * fs));
+            var budget = ts.fitBudget();
+            var px = lo;
+            var all = false;
+            if (ts.fitCost(lo) <= budget) {
+                if (ts.fitCost(hi) <= budget) {
+                    px = hi;
+                } else {
+                    while (hi - lo > 1) {
+                        var mid = Math.floor((lo + hi) / 2);
+                        if (ts.fitCost(mid) <= budget) lo = mid; else hi = mid;
+                    }
+                    px = lo;
+                }
+                all = true;
+            }
+            if (Math.round(px) !== Math.round(ts.fitPx) || all !== ts.fitAll) {
+                ts.fitPx = px;
+                ts.fitAll = all;
+                ts.heightCache = ({});
+            }
         }
 
         // The exact height of one item, laid out the way LyricRow lays it
@@ -1223,6 +1351,7 @@ PlasmoidItem {
         }
 
         onItemsChanged: {
+            ts.updateFit();
             ts.heightCache = ({});
             ts.following = true;
             ts.now = root.nowMs();
@@ -1231,8 +1360,8 @@ PlasmoidItem {
             lv.contentY = 0;
             requestFollow(false);
         }
-        onWidthChanged: requestFollow(false)
-        onHeightChanged: requestFollow(false)
+        onWidthChanged: { ts.updateFit(); requestFollow(false); }
+        onHeightChanged: { ts.updateFit(); requestFollow(false); }
         onFollowingChanged: if (!ts.following) scrollAnim.stop()
 
         NumberAnimation {
@@ -1261,6 +1390,13 @@ PlasmoidItem {
                 ts.requestFollow(true);
             }
             function onHaveSyncedChanged() { ts.now = root.nowMs(); }
+            function onCfgFontChanged() { ts.updateFit(); }
+        }
+
+        Connections {
+            target: Plasmoid.configuration
+            function onFontScaleChanged() { ts.updateFit(); }
+            function onWordAnimationChanged() { ts.updateFit(); }
         }
 
         ListView {
@@ -1692,7 +1828,9 @@ PlasmoidItem {
             Item {
                 id: hero
                 Layout.fillWidth: true
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 15
+                // the user picks the popup height on the cosmetics page
+                Layout.preferredHeight: Kirigami.Units.gridUnit
+                    * Math.max(10, Math.min(40, Plasmoid.configuration.popupHeroH || 15))
 
                 readonly property real gap: Kirigami.Units.largeSpacing
                 readonly property real deckMax: Kirigami.Units.gridUnit * 16
@@ -1841,6 +1979,197 @@ PlasmoidItem {
                                                        : i18n("Show lyrics")
                 }
 
+                // sound source button: pick which media app this widget
+                // controls (the MPRIS list)
+                Rectangle {
+                    id: playerPicker
+                    anchors.top: parent.top
+                    anchors.right: lyricToggle.left
+                    anchors.rightMargin: Kirigami.Units.smallSpacing
+                    width: Kirigami.Units.iconSizes.small + Kirigami.Units.smallSpacing * 2
+                    height: width
+                    radius: Kirigami.Units.smallSpacing
+                    color: pickerArea.containsMouse || root.pickerOpen
+                           ? Qt.alpha(root.cActive, 0.18)
+                           : Qt.alpha(root.cActive, 0.08)
+
+                    Kirigami.Icon {
+                        anchors.centerIn: parent
+                        source: root.currentPlayerIcon
+                        width: Kirigami.Units.iconSizes.small
+                        height: width
+                        color: root.cActive
+                    }
+                    MouseArea {
+                        id: pickerArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.pickerOpen = !root.pickerOpen
+                    }
+                    PC3.ToolTip.visible: pickerArea.containsMouse && !root.pickerOpen
+                    PC3.ToolTip.delay: 500
+                    PC3.ToolTip.text: root.currentPlayerName !== ""
+                                      ? i18n("Playing source: %1").arg(root.currentPlayerName)
+                                      : i18n("Choose the player to control")
+                }
+
+                // click-away shield while the picker is open
+                Rectangle {
+                    anchors.fill: parent
+                    z: 90
+                    visible: root.pickerOpen
+                    color: "transparent"
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: root.pickerOpen = false
+                    }
+                }
+
+                Rectangle {
+                    id: playerCard
+                    z: 91
+                    visible: root.pickerOpen
+                    anchors.top: playerPicker.bottom
+                    anchors.topMargin: Kirigami.Units.smallSpacing
+                    anchors.right: playerPicker.right
+                    width: Kirigami.Units.gridUnit * 13
+                    height: Math.min(playerCol.implicitHeight + Kirigami.Units.gridUnit,
+                                     hero.height - playerPicker.height - Kirigami.Units.gridUnit * 2)
+                    radius: Kirigami.Units.smallSpacing * 1.5
+                    color: Kirigami.Theme.backgroundColor
+                    border.width: 1
+                    border.color: Qt.alpha(root.cActive, 0.25)
+                    clip: true
+
+                    ColumnLayout {
+                        id: playerCol
+                        x: Kirigami.Units.smallSpacing
+                        y: Kirigami.Units.smallSpacing
+                        width: parent.width - Kirigami.Units.smallSpacing * 2
+                        spacing: 2
+
+                        // "Auto" restores the app-filter based claim
+                        Rectangle {
+                            id: autoRow
+                            Layout.fillWidth: true
+                            height: Kirigami.Units.gridUnit * 1.9
+                            radius: Kirigami.Units.smallSpacing
+                            color: autoArea.containsMouse || root.manualKey === ""
+                                   ? Qt.alpha(root.cActive, 0.14) : "transparent"
+
+                            Row {
+                                id: autoRowLine
+                                anchors.fill: parent
+                                anchors.leftMargin: Kirigami.Units.smallSpacing
+                                anchors.rightMargin: Kirigami.Units.smallSpacing
+                                spacing: Kirigami.Units.smallSpacing
+
+                                Kirigami.Icon {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    source: "audio-x-generic"
+                                    width: Kirigami.Units.iconSizes.small
+                                    height: width
+                                    color: root.cActive
+                                }
+                                Text {
+                                    width: autoRowLine.width - Kirigami.Units.iconSizes.small
+                                           - Kirigami.Units.smallSpacing * 2 - autoCheck.width
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    textFormat: Text.PlainText
+                                    text: i18n("Auto")
+                                    color: root.cActive
+                                    font.family: root.cfgFont
+                                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                    elide: Text.ElideRight
+                                }
+                                Kirigami.Icon {
+                                    id: autoCheck
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    source: "object-select-symbolic"
+                                    visible: root.manualKey === ""
+                                    width: Kirigami.Units.iconSizes.small
+                                    height: width
+                                    color: root.cActive
+                                }
+                            }
+                            MouseArea {
+                                id: autoArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.clearPlayerPick()
+                            }
+                        }
+
+                        Repeater {
+                            model: mpris
+
+                            delegate: Rectangle {
+                                readonly property string pName:
+                                    String(model.identity || model.desktopEntry || "") !== ""
+                                    ? String(model.identity || model.desktopEntry)
+                                    : i18n("Unknown player")
+                                readonly property string pKey:
+                                    (String(model.identity || "") !== ""
+                                     ? String(model.identity)
+                                     : String(model.desktopEntry || "")).toLowerCase()
+                                readonly property bool cur: mpris.currentIndex === index
+                                Layout.fillWidth: true
+                                height: Kirigami.Units.gridUnit * 1.9
+                                radius: Kirigami.Units.smallSpacing
+                                color: rowArea.containsMouse || cur
+                                       ? Qt.alpha(root.cActive, 0.14) : "transparent"
+
+                                Row {
+                                    id: rowLine
+                                    anchors.fill: parent
+                                    anchors.leftMargin: Kirigami.Units.smallSpacing
+                                    anchors.rightMargin: Kirigami.Units.smallSpacing
+                                    spacing: Kirigami.Units.smallSpacing
+
+                                    Kirigami.Icon {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        source: String(model.desktopEntry || "") !== ""
+                                                ? String(model.desktopEntry).replace(/\.desktop$/, "")
+                                                : "multimedia-player"
+                                        width: Kirigami.Units.iconSizes.small
+                                        height: width
+                                        color: root.cActive
+                                    }
+                                    Text {
+                                        width: rowLine.width - Kirigami.Units.iconSizes.small
+                                               - Kirigami.Units.smallSpacing * 2 - rowCheck.width
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        textFormat: Text.PlainText
+                                        text: pName
+                                        color: root.cActive
+                                        font.family: root.cfgFont
+                                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                        elide: Text.ElideRight
+                                    }
+                                    Kirigami.Icon {
+                                        id: rowCheck
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        source: "object-select-symbolic"
+                                        visible: cur
+                                        width: Kirigami.Units.iconSizes.small
+                                        height: width
+                                        color: root.cActive
+                                    }
+                                }
+                                MouseArea {
+                                    id: rowArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.selectPlayer(pKey, index)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // deck (right): album art with the title block below it,
                 // centred in the space the transcript leaves over
                 ColumnLayout {
@@ -1944,6 +2273,20 @@ PlasmoidItem {
                         font.family: root.cfgFont
                         fontCss: root.cfgFontCss
                         scrolling: Plasmoid.configuration.marquee && root.expanded && root.winVisible
+                    }
+                    // DMS credits the lyrics source under the track info
+                    Text {
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.preferredWidth: deck.width
+                        horizontalAlignment: Text.AlignHCenter
+                        visible: root.songSource !== ""
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        text: root.songSource !== "" ? i18n("Lyrics from %1").arg(root.songSource) : ""
+                        color: root.cActive
+                        opacity: 0.55
+                        font.family: root.cfgFont
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     }
                 }
             }

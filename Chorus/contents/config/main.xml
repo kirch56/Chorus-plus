@@ -95,16 +95,11 @@
     <entry name="apiUrl" type="String">
       <default>http://127.0.0.1:26538</default>
     </entry>
-    <entry name="extraProviders" type="StringList">
-      <default>betterlyrics</default>
-      <default>unison</default>
-      <default>lyricsplus</default>
-      <default>kugou</default>
-      <default>lrclib</default>
-      <default>youtube</default>
-    </entry>
     <entry name="popupLyrics" type="Bool">
       <default>true</default>
+    </entry>
+    <entry name="popupHeroH" type="Int">
+      <default>15</default>
     </entry>
     <entry name="wordAnimation" type="Bool">
       <default>true</default>
