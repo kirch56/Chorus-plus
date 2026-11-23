@@ -198,3 +198,14 @@ test("SyncLRC provider requests structured TTML rather than flattened LRC", () =
     assert.match(adapter, /type=karaoke&format=ttml/);
     assert.ok(adapter.includes("ttmlToSong(unwrapTtml(ttml))"));
 });
+
+test("SyncLRC strips literal background and agent markers from fallback TTML", () => {
+    const ttml = `<tt xmlns="http://www.w3.org/ns/ttml"><body><div>
+      <p begin="00:00:01.000" end="00:00:02.000"><span begin="00:00:01.000">{agent:v1}Hello</span><span begin="00:00:01.300">world</span></p>
+      <p begin="00:00:01.500" end="00:00:02.500"><span begin="00:00:01.500">{bg}中文背景歌词</span></p>
+    </div></body></tt>`;
+    const song = sandbox.ttmlToSong(ttml);
+    assert.ok(song);
+    assert.equal(song.lines.length, 1);
+    assert.equal(song.lines[0].text, "Hello world");
+});
