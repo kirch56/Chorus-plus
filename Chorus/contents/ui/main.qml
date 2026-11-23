@@ -1087,7 +1087,7 @@ PlasmoidItem {
         readonly property bool timed: !isBreak && root.wordsAnimEnabled
                                       && line && line.words && line.words.length > 1
         // While browsing every row rests fully visible, like DMS.
-        readonly property real restOpacity: (!view || view.following) ? (promoted ? 1 : 0.4) : 1
+        readonly property real restOpacity: (!view || view.following) ? (promoted ? 1 : 0.62) : 1
 
         width: view ? view.width : 0
         height: isBreak ? Math.ceil((view ? view.breakSize : 16) + pad * 2)
@@ -1146,7 +1146,7 @@ PlasmoidItem {
                 sweepable: rowItem.timed
                 fontPx: rowItem.fontPx
                 fontWeight: rowItem.promoted ? Font.Bold : Font.DemiBold
-                dimColor: Qt.alpha(root.cActive, rowItem.promoted ? 0.35 : 0.45)
+                dimColor: Qt.alpha(root.cActive, rowItem.promoted ? 0.35 : 0.65)
                 fillColor: root.cActive
                 clock: rowItem.clock
             }
@@ -1480,8 +1480,15 @@ PlasmoidItem {
             // Flickable/ListView have no onWheel signal — a WheelHandler
             // scrolls the view itself and tells us a real wheel event came.
             WheelHandler {
+                // Observe wheel input only. A default WheelHandler target is
+                // the ListView itself and can consume wheel events without
+                // changing contentY, preventing Flickable's native scrolling.
+                target: null
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                onWheel: ts.browse()
+                onWheel: {
+                    ts.browse();
+                    wheel.accepted = false;
+                }
             }
         }
 
@@ -1916,7 +1923,7 @@ PlasmoidItem {
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
                     width: Math.round(popup.showLyrics
-                                      ? hero.width * 0.58 - hero.gap / 2
+                                      ? hero.width * 0.64 - hero.gap / 2
                                       : 0)
                     Behavior on width {
                         NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
