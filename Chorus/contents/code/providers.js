@@ -790,7 +790,7 @@ function liriQoToSong(body, ctx) {
             words: words
         });
     }
-    var song = providerSong(lines, "LiriQo", ctx, 0, providerTrackInfo(root));
+    var song = providerSong(lines, "LiriQo", ctx, 0, providerTrackInfo(body));
     if (song && root.provider) ctx.log("lyrics: LiriQo upstream " + root.provider);
     return song;
 }
@@ -1268,9 +1268,12 @@ function dmsMetadataProblem(ctx, song) {
         return "duration mismatch";
     if (song.matchArtist && ctx.artist
             && !dmsArtistCompatible(ctx.artist, song.matchArtist)) return "artist mismatch";
+    var requestedVersioned = dmsHasVersionTag(ctx.title);
+    var candidateVersioned = dmsHasVersionTag(song.matchTitle);
     if (song.matchTitle && ctx.title && !dmsTitlesEquivalent(ctx.title, song.matchTitle)
-            && !durationVerified) return "track/version mismatch";
-    if (dmsHasVersionTag(ctx.title) && !song.matchTitle && !durationVerified)
+            && !durationVerified && (requestedVersioned || candidateVersioned))
+        return "track/version mismatch";
+    if (requestedVersioned && !song.matchTitle && !durationVerified)
         return "version not verified";
     return "";
 }
