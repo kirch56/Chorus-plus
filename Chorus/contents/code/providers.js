@@ -1,5 +1,5 @@
 // Lyrics providers, DMS-style (Dux Modular Shell / dux-go lyrics client).
-// Providers: Better Lyrics, Unison, LyricsPlus, LRCMux, LiriQo, Lyrica, SyncLRC,
+// Providers: Better Lyrics, Unison, LyricsPlus, LRCMux, LiriQo, Lyrica,
 // SyncLyrics API, AMLL TTML DB, lrc.red, LyricsDB, Karalyr, KuGou, LRCLIB, YouTube Music.
 // Every provider is raced at once and the best answer wins (ctx.enabled may
 // still restrict the set, but the widget no longer exposes a picker):
@@ -46,7 +46,7 @@ function parseTTMLTime(str) {
     return Math.round(sec * 1000);
 }
 
-// SyncLRC can return Apple-style TTML with parallel translation and
+// Some providers return Apple-style TTML with parallel translation and
 // romanization spans (ttm:role="x-translation"/"x-roman"). Those are separate
 // lyric tracks, not words from the lead vocal. Exclude them before flattening,
 // otherwise every translation is rendered on top of the original line.
@@ -160,7 +160,7 @@ function ttmlToSong(ttml) {
     while ((m = re.exec(String(ttml))) !== null) {
         var open = m[0].slice(0, m[0].indexOf(">"));
         // Role-marked non-lead paragraphs are separate lyric lanes. Some
-        // SyncLRC fallback TTML may also carry its {bg} marker as plain text.
+        // upstream TTML payloads also carry a {bg} marker as plain text.
         if (ttmlIsNonLeadRole(open) || /\{bg\}/i.test(m[2])) continue;
         var t = parseTTMLTime(m[1]);
         var endM = /\bend\s*=\s*["']([^"']+)["']/.exec(open);
@@ -933,37 +933,6 @@ function fetchLyrica(ctx, cb) {
     });
 }
 
-// SyncLRC: request TTML, not flattened LRC. TTML preserves vocal roles
-// (translation, romanization and background) so the adapter can remove those
-// tracks before rendering only the lead vocal. Its karaoke LRC also loses
-// separators between adjacent timed word spans and cannot be parsed safely.
-function fetchSyncLRC(ctx, cb) {
-    var url = "https://api.synclrc.dev/lyrics?track=" + encodeURIComponent(ctx.title)
-            + "&artist=" + encodeURIComponent(ctx.artist)
-            + "&type=karaoke&format=ttml";
-    if (ctx.album) url += "&album=" + encodeURIComponent(ctx.album);
-    if (ctx.durS > 0) url += "&duration=" + ctx.durS;
-    ctx.httpGet(url, function (ok, resp) {
-        if (ctx.isStale()) return;
-        var body = ok && resp ? safeJson(resp) : null;
-        if (!body) { cb(null); return; }
-
-        var ttml = typeof body.lyrics === "string" ? body.lyrics
-                 : (typeof body.ttml === "string" ? body.ttml : null);
-        var song = ttml ? ttmlToSong(unwrapTtml(ttml)) : null;
-        if (song) {
-            song.providerName = "SyncLRC";
-            var syncInfo = providerTrackInfo(body);
-            song.durMs = syncInfo.duration > 0 ? Math.round(syncInfo.duration * 1000) : 0;
-            if (syncInfo.title) song.matchTitle = syncInfo.title;
-            if (syncInfo.artist) song.matchArtist = syncInfo.artist;
-            if (body.type && body.type !== "karaoke")
-                ctx.log("lyrics: SyncLRC returned " + body.type + " fallback");
-        }
-        cb(song);
-    });
-}
-
 // SyncLyrics API exposes Musixmatch/NetEase word timing as per-token offsets
 // in seconds relative to each line's absolute start timestamp.
 function syncLyricsToSong(body, ctx) {
@@ -1200,7 +1169,6 @@ var PROVIDERS = [
     { id: "lrcmux", name: "LRCMux", wordSync: true, fetch: fetchLrcmux },
     { id: "liriqo", name: "LiriQo", wordSync: true, fetch: fetchLiriQo },
     { id: "lyrica", name: "Lyrica", wordSync: true, fetch: fetchLyrica },
-    { id: "synclrc", name: "SyncLRC", wordSync: true, fetch: fetchSyncLRC },
     { id: "synclyrics", name: "SyncLyrics API", wordSync: true, fetch: fetchSyncLyrics },
     { id: "amll", name: "AMLL TTML DB", wordSync: true, fetch: fetchAmll },
     { id: "lrc-red", name: "lrc.red", wordSync: true, fetch: fetchLrcRed },
