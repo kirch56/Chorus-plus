@@ -1036,22 +1036,7 @@ var PROVIDERS = [
     { id: "youtube", name: "YouTube Music", wordSync: false, fetch: fetchYoutubeMusic }
 ];
 
-// wordSync marks providers that can return word/syllable-level timings:
-// Better Lyrics and Unison serve Apple Music TTML, LyricsPlus aggregates
-// Musixmatch word sync (syllabus arrays). KuGou, LRCLIB (mostly) and
-// YouTube Music are line-level.
-//
-// The order is DMS's builtin priority (Dux Modular Shell MediaOptions /
-// dux-go DefaultProviders). Every enabled provider is raced at once and the
-// best answer wins, so the order only decides among answers that agree.
-var PROVIDERS = [
-    { id: "betterlyrics", name: "Better Lyrics", wordSync: true, fetch: fetchBetterLyrics },
-    { id: "unison", name: "Unison", wordSync: true, fetch: fetchUnison },
-    { id: "lyricsplus", name: "LyricsPlus", wordSync: true, fetch: fetchLyricsPlus },
-    { id: "kugou", name: "KuGou", wordSync: false, fetch: fetchKugou },
-    { id: "lrclib", name: "LRCLIB", wordSync: false, fetch: fetchLrclib },
-    { id: "youtube", name: "YouTube Music", wordSync: false, fetch: fetchYoutubeMusic }
-];
+
 
 function getProvider(id) {
     for (var i = 0; i < PROVIDERS.length; i++)
