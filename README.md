@@ -47,8 +47,8 @@ https://github.com/user-attachments/assets/aff481a7-01e9-43f6-9053-7931b17a784e
 
 ## Features
 
-- **Synced lyrics** raced across **six providers** — Better Lyrics, Unison, LyricsPlus, KuGou, LRCLIB and YouTube Music — with a DMS-style scoring: the best answer wins, not just the first one.
-- **Word-by-word sync**: when a source carries word timings (LRCLIB lyricsfiles, Better Lyrics / Unison TTML, LyricsPlus Musixmatch word sync), words light up one by one as they are sung — an Apple Music style karaoke sweep in the panel and the popup. Toggle it under **Look & Feel → Animation**.
+- **Synced lyrics** raced across **fifteen providers** — Better Lyrics, Unison, LyricsPlus, LRCMux, LiriQo, Lyrica, SyncLRC, SyncLyrics API, AMLL TTML DB, lrc.red, LyricsDB, Karalyr, KuGou, LRCLIB and YouTube Music — with DMS-style scoring: the best answer wins, not just the first one.
+- **Word-by-word sync**: uses word/syllable timing from Better Lyrics, Unison, LyricsPlus, LRCMux, LiriQo, Lyrica, SyncLRC, SyncLyrics, AMLL, lrc.red, LyricsDB, Karalyr and LRCLIB Lyricsfiles when available; otherwise it keeps line-synced lyrics. Words light up as they are sung — an Apple Music style karaoke sweep in the panel and popup. Toggle it under **Look & Feel → Animation**.
 - **DMS-style popup** (ported from [Dux Modular Shell](https://github.com/AvengeMedia/DankMaterialShell)): scrolling lyrics transcript on the left — the sung line centred, big and sweeping word by word, click any line to seek, "Follow playback" after scrolling around — and the album cover with the track on the right. A lyrics button hides the text and hands the space to the cover.
 - Works with **any media player**: Spotify, YouTube Music, VLC, etc.
 - Album cover, current lyric, playback controls, seek bar, shuffle/repeat, volume slider.
@@ -78,14 +78,25 @@ kpackagetool6 -t Plasma/Applet -u chorus-plus.plasmoid
 
 ## Lyrics
 
-All six providers below are asked at once, like DMS (Dux Modular Shell) does it: every source is raced in parallel and the best answer wins — lyrics whose length matches the track beat ones timed for another cut, word timings beat bare lines, and sources whose timing agrees with the others beat lone outliers. Only among answers that agree does the priority order decide. Each provider can be toggled in the widget settings under **Look & Feel → Lyrics providers**:
+All fifteen providers below are raced in parallel, like DMS (Dux Modular Shell) does it. The best answer wins: tracks with a matching duration beat lyrics timed for another cut, word timings beat line timings, and sources whose timing agrees with other providers beat lone outliers. The priority order only decides between otherwise comparable answers.
 
-1. **Better Lyrics** — the [Better Lyrics API](https://api.betterlyrics.org), Apple Music TTML with per-word timings when available
-2. **Unison** — community-submitted synced lyrics at [unison.betterlyrics.org](https://unison.betterlyrics.org); the submitter is credited in the widget log
-3. **LyricsPlus** — the [LyricsPlus](https://github.com/ibratabian17/lyricsplus) aggregator (Apple Music, QQ, Musixmatch and more, including word/syllable sync)
-4. **KuGou** — the [KuGou](https://www.kugou.com) lyrics library, great for CJK songs (line-level only)
-5. **LRCLIB** — the [LRCLIB](https://lrclib.net) library, including its [Lyricsfile](https://lrclib.net/lyricsfile) records with word-level timings
-6. **YouTube Music** — timed captions from YouTube's InnerTube API; YouTube blocks some networks entirely, so this one may be unavailable depending on where you are (line-level only)
+1. **Better Lyrics** — [Better Lyrics API](https://api.betterlyrics.org); Apple Music TTML with per-word timings when available
+2. **Unison** — community-submitted synced lyrics from [Unison](https://unison.betterlyrics.org); the submitter is credited in the widget log
+3. **LyricsPlus** — [LyricsPlus](https://github.com/ibratabian17/lyricsplus), aggregating Apple Music, QQ Music, Musixmatch and more
+4. **LRCMux** — [LRCMux](https://lrcmux.dev), a public aggregator with word-synced Deezer and KuGou results
+5. **LiriQo** — [LiriQo](https://github.com/AlFarrizi-Studio/LiriQo), an 11-source aggregator with word- and syllable-level timing
+6. **Lyrica** — [Lyrica](https://github.com/Wilooper/Lyrica), another multi-source lookup with optional word timestamps
+7. **SyncLRC** — [SyncLRC](https://synclrc.dev), Enhanced LRC and karaoke TTML (30 requests/minute)
+8. **SyncLyrics API** — [Stef-DP/lyrics-api](https://github.com/Stef-DP/lyrics-api), word-synced lyrics from Musixmatch, LRCLIB and NetEase
+9. **AMLL TTML DB** — [AMLL community TTML database](https://github.com/amll-dev/amll-ttml-db), queried by song and artist
+10. **lrc.red** — [lrc.red](https://lrc.red), community TTML with word/syllable timing; Chorus identifies itself and credits the source
+11. **LyricsDB** — [LyricsDB](https://github.com/Anson10124/LyricsDB), public word-synced library; uncached live lookups are limited to 6/minute
+12. **Karalyr** — [Karalyr](https://karalyr.com/docs), word-synced Enhanced LRC only; its public catalogue is currently small
+13. **KuGou** — the [KuGou](https://www.kugou.com) lyrics library, useful for CJK songs (line-level only)
+14. **LRCLIB** — the [LRCLIB](https://lrclib.net) library, including [Lyricsfile](https://lrclib.net/lyricsfile) records with word-level timings
+15. **YouTube Music** — timed captions from YouTube's InnerTube API; some networks are blocked (line-level only)
+
+All added services use public endpoints and require no API key. Their availability, per-song coverage and rate limits are controlled by the respective services.
 
 Gaps longer than 5 seconds render as instrumental breaks, and the footer of the transcript credits the provider the lyrics came from.
 
