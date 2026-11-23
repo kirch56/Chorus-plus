@@ -272,6 +272,8 @@ PlasmoidItem {
 
     property var lines: []
     readonly property bool haveSynced: lines.length > 0
+    readonly property bool wordsAnimEnabled: Plasmoid.configuration.wordAnimation !== false
+    property bool wordSync: false
     property int lineIdx: -1
     property double curStart: 0
     property double curEnd: 0
@@ -279,6 +281,14 @@ PlasmoidItem {
     property var cache: ({})
     property var cacheKeys: []
     property bool fetching: false
+
+    // Word fragments of a line, or null when the line (or the config) has no
+    // word-level timings to sweep.
+    function lineWords(i) {
+        if (!wordsAnimEnabled || i < 0 || i >= lines.length) return null;
+        var w = lines[i].words;
+        return (w && w.length > 1) ? w : null;
+    }
 
     signal lyricsResynced()
 
@@ -360,6 +370,21 @@ PlasmoidItem {
         cache[key] = val;
     }
 
+    // LRCLIB record -> song object. Word-level timings live in the lyricsfile
+    // YAML (hasWordSync); the LRC syncedLyrics stay line-level.
+    function lrclibRecordToSong(rec) {
+        if (!rec) return null;
+        if (rec.hasWordSync && rec.lyricsfile) {
+            var s = Lrc.parseLyricsfile(rec.lyricsfile);
+            if (s && s.lines.length > 0) return s;
+        }
+        if (rec.syncedLyrics) {
+            var s2 = Lrc.parse(rec.syncedLyrics);
+            if (s2 && s2.lines.length > 0) return s2;
+        }
+        return null;
+    }
+
     function fetchLyrics() {
         var key = songKey;
         if (cache[key] !== undefined) {
@@ -375,64 +400,85 @@ PlasmoidItem {
 
         httpGet(url, function (ok, resp) {
             if (root.songKey !== key) return;
-            var synced = null;
-            if (ok) {
-                try { synced = JSON.parse(resp).syncedLyrics || null; } catch (e) {}
+            var rec = null;
+            if (ok && resp) {
+                try { rec = JSON.parse(resp); } catch (e) {}
             }
-            if (synced) {
+            var song = root.lrclibRecordToSong(rec);
+            if (song) {
+                console.log("[chorus] lyrics: LRCLIB match"
+                            + (song.wordSync ? " (word-level)" : " (line-level)"));
                 root.fetching = false;
-                root.rememberCache(key, synced);
-                root.applyLyrics(synced);
-            } else {
-                root.httpGet("https://lrclib.net/api/search?track_name=" + encodeURIComponent(root.trackTitle)
-                             + "&artist_name=" + encodeURIComponent(root.trackArtist),
-                    function (ok2, resp2) {
-                        if (root.songKey !== key) return;
-                        var s2 = null;
-                        if (ok2) {
-                            try {
-                                var arr = JSON.parse(resp2);
-                                for (var i = 0; i < arr.length; i++) {
-                                    if (arr[i].syncedLyrics) { s2 = arr[i].syncedLyrics; break; }
-                                }
-                            } catch (e) {}
-                        }
-                        if (s2) {
-                            root.fetching = false;
-                            root.rememberCache(key, s2);
-                            root.applyLyrics(s2);
-                        } else {
-                            root.fetchExtraProviders(key, durS);
-                        }
-                    });
+                root.rememberCache(key, song);
+                root.applyLyrics(song);
+                return;
             }
+            root.httpGet("https://lrclib.net/api/search?track_name=" + encodeURIComponent(root.trackTitle)
+                         + "&artist_name=" + encodeURIComponent(root.trackArtist),
+                function (ok2, resp2) {
+                    if (root.songKey !== key) return;
+                    var song2 = null;
+                    if (ok2 && resp2) {
+                        try {
+                            var arr = JSON.parse(resp2);
+                            // prefer a word-synced record, then the first synced one
+                            var wordRec = null, syncRec = null;
+                            for (var i = 0; i < arr.length; i++) {
+                                if (!wordRec && arr[i].hasWordSync && arr[i].lyricsfile)
+                                    wordRec = arr[i];
+                                if (!syncRec && arr[i].syncedLyrics) syncRec = arr[i];
+                            }
+                            song2 = root.lrclibRecordToSong(wordRec)
+                                    || root.lrclibRecordToSong(syncRec);
+                        } catch (e) {}
+                    }
+                    if (song2) {
+                        console.log("[chorus] lyrics: LRCLIB match (search)"
+                                    + (song2.wordSync ? " (word-level)" : " (line-level)"));
+                        root.fetching = false;
+                        root.rememberCache(key, song2);
+                        root.applyLyrics(song2);
+                    } else {
+                        root.fetchExtraProviders(key, durS, null);
+                    }
+                });
         });
     }
 
     // Extra lyrics providers (Better Lyrics, Unison, LyricsPlus, KuGou, YouTube
-    // Music), tried in order when LRCLIB has no synced lyrics.
-    function fetchExtraProviders(key, durS) {
+    // Music). With word-sync priority the word-level capable ones are tried
+    // first; lineFallback (LRCLIB line-level lyrics) is only used when no
+    // provider returns word timings.
+    function fetchExtraProviders(key, durS, lineFallback) {
         var ctx = {
             title: trackTitle,
             artist: trackArtist,
             album: trackAlbum,
             durS: durS,
             enabled: Plasmoid.configuration.extraProviders || [],
+            wordSyncPriority: Plasmoid.configuration.wordSyncPriority !== false,
+            lineFallback: lineFallback || null,
             httpGet: httpGet,
             httpPostJson: httpPostJson,
             isStale: function () { return root.songKey !== key; },
             log: function (msg) { console.log("[chorus] " + msg); }
         };
-        Providers.fetchAll(ctx, function (lrc) {
+        Providers.fetchAll(ctx, function (song) {
             if (root.songKey !== key) return;
             root.fetching = false;
-            root.rememberCache(key, lrc);
-            root.applyLyrics(lrc);
+            root.rememberCache(key, song);
+            root.applyLyrics(song);
         });
     }
 
-    function applyLyrics(lrc) {
-        lines = lrc ? Lrc.parse(lrc) : [];
+    function applyLyrics(song) {
+        if (song && song.lines) {
+            lines = song.lines;
+            wordSync = song.wordSync === true;
+        } else {
+            lines = [];
+            wordSync = false;
+        }
         resync();
     }
 
@@ -447,7 +493,9 @@ PlasmoidItem {
         var t = nowMs();
         var idx = Lrc.indexFor(lines, t);
         curStart = idx >= 0 ? lines[idx].t : 0;
-        curEnd = (idx + 1 < lines.length) ? lines[idx + 1].t
+        // prefer the line's own end time when the source provides one
+        curEnd = (idx >= 0 && lines[idx].e > curStart) ? lines[idx].e
+               : (idx + 1 < lines.length) ? lines[idx + 1].t
                                           : Math.max(curStart + 5000, lengthMs);
         if (curEnd <= curStart) curEnd = curStart + 1000;
         lineIdx = idx;
@@ -787,11 +835,199 @@ PlasmoidItem {
     readonly property color cActive: Plasmoid.configuration.activeColor
     readonly property color cInactive: Qt.alpha(cActive, 0.55)
 
+    // One lyric line: a plain Text when the line has no word timings, otherwise
+    // a row of timed fragments that light up with the active color as they are
+    // sung — a karaoke sweep like the Dux Lyrical Engine (DMS 2.0) / Apple
+    // Music. The fill edge per frame comes from Lrc.smoothEdge.
+    component LyricLineView: Item {
+        id: lineView
+
+        property string text: ""
+        property var words: null            // [{ t, e, text }] | null
+        property bool sweep: true           // word animation enabled
+        property bool playing: false        // drives the per-frame sweep clock
+        property color textColor: root.cActive
+        property real fontPx: 14
+
+        readonly property bool hasWords: sweep && fragRepeater.count > 1
+
+        implicitWidth: hasWords ? fragRow.width : plainText.implicitWidth
+        width: implicitWidth
+        height: fontPx * 1.7
+        onWordsChanged: rebuild()
+        onHasWordsChanged: updateFills()
+        onPlayingChanged: updateFills()
+        Component.onCompleted: rebuild()
+
+        function rebuild() {
+            var frags = [];
+            if (words) {
+                for (var i = 0; i < words.length; i++) {
+                    var w = words[i];
+                    if (!w || typeof w.t !== "number" || w.t < 0) continue;
+                    frags.push({ t: w.t,
+                                 e: (typeof w.e === "number" && w.e > w.t) ? w.e : w.t,
+                                 text: String(w.text) });
+                }
+            }
+            if (frags.length < 2) frags = [];
+            fragRepeater.model = frags;
+            updateFills();
+        }
+
+        function updateFills() {
+            if (!hasWords) return;
+            var segs = [], i;
+            for (i = 0; i < fragRepeater.count; i++) {
+                var it = fragRepeater.itemAt(i);
+                if (!it) continue;
+                segs.push({ t: it.t, e: it.e, x0: it.x, x1: it.x + it.width });
+            }
+            if (segs.length === 0) return;
+            var edge = Lrc.smoothEdge(segs, root.nowMs(), fontPx * 0.9, 240);
+            for (i = 0; i < fragRepeater.count; i++) {
+                var d = fragRepeater.itemAt(i);
+                if (d) d.fillW = Math.max(0, Math.min(d.width, edge - d.x));
+            }
+        }
+
+        FrameAnimation {
+            id: sweepAnim
+            running: lineView.hasWords && lineView.playing
+                     && root.winVisible && lineView.visible
+            onTriggered: lineView.updateFills()
+        }
+
+        Text {
+            id: plainText
+            textFormat: root.cfgFontCss !== "" ? Text.RichText : Text.PlainText
+            visible: !lineView.hasWords
+            text: lineView.hasWords ? "" : Lrc.fontSpan(lineView.text, root.cfgFontCss)
+            anchors.verticalCenter: parent.verticalCenter
+            color: lineView.textColor
+            font.family: root.cfgFont
+            font.pixelSize: lineView.fontPx
+            font.weight: Font.DemiBold
+        }
+
+        Row {
+            id: fragRow
+            visible: lineView.hasWords
+            anchors.verticalCenter: parent.verticalCenter
+
+            Repeater {
+                id: fragRepeater
+
+                delegate: Item {
+                    id: frag
+
+                    required property var modelData
+                    readonly property real t: modelData.t
+                    readonly property real e: modelData.e
+                    property real fillW: 0
+
+                    width: fragBase.implicitWidth
+                    height: lineView.height
+
+                    Text {
+                        id: fragBase
+                        textFormat: root.cfgFontCss !== "" ? Text.RichText : Text.PlainText
+                        y: (parent.height - implicitHeight) / 2
+                        text: Lrc.fontSpan(frag.modelData.text, root.cfgFontCss)
+                        color: root.cInactive
+                        font.family: root.cfgFont
+                        font.pixelSize: lineView.fontPx
+                        font.weight: Font.DemiBold
+                    }
+
+                    // the sung part, clipped to the sweep edge
+                    Item {
+                        id: fillClip
+                        x: 0
+                        y: 0
+                        width: frag.fillW
+                        height: parent.height
+                        clip: true
+
+                        Text {
+                            id: fragFill
+                            textFormat: root.cfgFontCss !== "" ? Text.RichText : Text.PlainText
+                            y: fragBase.y
+                            text: Lrc.fontSpan(frag.modelData.text, root.cfgFontCss)
+                            color: root.cActive
+                            font.family: root.cfgFont
+                            font.pixelSize: lineView.fontPx
+                            font.weight: Font.DemiBold
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Three stacked lyric lines (previous, current, next) for the popup. The
+    // current line sweeps word by word when timings allow; texts are set
+    // imperatively so roll() can capture the outgoing lines first.
+    component LyricStack: Item {
+        id: stack
+
+        property string prevText: ""
+        property string mainText: ""
+        property string nextText: ""
+        property var mainWords: null
+        property bool sweepMain: true
+
+        width: parent ? parent.width : 0
+        height: prevLabel.height + Kirigami.Units.smallSpacing
+                + mainSlot.height + Kirigami.Units.smallSpacing
+                + nextLabel.height
+
+        Text {
+            id: prevLabel
+            width: parent.width
+            elide: Text.ElideRight
+            visible: stack.prevText !== ""
+            text: stack.prevText
+            color: root.cActive
+            opacity: 0.45
+            font.family: root.cfgFont
+            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
+        }
+        LyricLineView {
+            id: mainSlot
+            y: prevLabel.height + Kirigami.Units.smallSpacing
+            width: parent.width
+            height: Kirigami.Theme.defaultFont.pixelSize * 1.7
+            visible: stack.mainText !== ""
+            text: stack.mainText
+            words: stack.mainWords
+            sweep: stack.sweepMain
+            playing: root.isPlaying
+            textColor: root.cActive
+            fontPx: Kirigami.Theme.defaultFont.pixelSize * 1.25
+        }
+        Text {
+            id: nextLabel
+            y: mainSlot.y + mainSlot.height + Kirigami.Units.smallSpacing
+            width: parent.width
+            elide: Text.ElideRight
+            visible: stack.nextText !== ""
+            text: stack.nextText
+            color: root.cActive
+            opacity: 0.3
+            font.family: root.cfgFont
+            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
+        }
+    }
+
     compactRepresentation: Item {
         id: bar
 
         property bool activeSticky: false
-        Component.onCompleted: activeSticky = root.isActive
+        Component.onCompleted: {
+            activeSticky = root.isActive;
+            lineSlide();
+        }
         Timer {
             id: idleDelay
             interval: 2500
@@ -827,7 +1063,7 @@ PlasmoidItem {
         readonly property real contentLen: hold ? Math.max(frozenLen, liveLen) : liveLen
         function captureFrozen() {
             var fixedW = row.implicitWidth - viewport.Layout.preferredWidth;
-            var uncappedVw = Math.min(curText.implicitWidth + 2, lyricsMaxW);
+            var uncappedVw = Math.min(curLine.width + 2, lyricsMaxW);
             frozenLen = shown ? Math.max(fixedW + uncappedVw, minTotalW) : 0;
             frozenViewportW = Math.max(0, frozenLen - fixedW);
         }
@@ -871,28 +1107,30 @@ PlasmoidItem {
         }
 
         onDisplayTextChanged: {
-            lineSlide(displayText);
+            lineSlide();
             marquee.reset();
         }
-        function lineSlide(newText) {
+        function lineSlide() {
             slideAnim.stop();
-            var animate = shownOnce && newText !== "" && bar.shown && root.winVisible
+            var animate = shownOnce && displayText !== "" && bar.shown && root.winVisible
                           && !titleMode && root.isPlaying;
-            prevText.text = curText.text;
-            curText.text = Lrc.fontSpan(newText, root.cfgFontCss);
+            prevLine.text = curLine.text;
+            prevLine.words = null;
+            curLine.text = displayText;
+            curLine.words = titleMode ? null : root.lineWords(root.lineIdx);
             shownOnce = true;
-            if (animate && prevText.text !== "") {
-                prevText.opacity = 1;
-                prevText.y = curText.yBase;
-                curText.opacity = 0;
-                curText.y = curText.yBase + bar.thick * 0.55;
-                curText.color = root.cInactive;
+            if (animate && prevLine.text !== "") {
+                prevLine.opacity = 1;
+                prevLine.y = 0;
+                curLine.opacity = 0;
+                curLine.y = bar.thick * 0.55;
                 slideAnim.start();
             } else {
-                prevText.opacity = 0;
-                curText.opacity = 1;
-                curText.y = Qt.binding(function () { return curText.yBase; });
-                curText.color = Qt.binding(function () { return root.cActive; });
+                prevLine.opacity = 0;
+                prevLine.y = 0;
+                curLine.opacity = 1;
+                curLine.y = 0;
+                curLine.updateFills();
             }
         }
         property bool shownOnce: false
@@ -900,13 +1138,23 @@ PlasmoidItem {
             target: root
             function onCfgFontCssChanged() {
                 slideAnim.stop();
-                prevText.text = "";
-                prevText.opacity = 0;
-                curText.opacity = 1;
-                curText.text = Lrc.fontSpan(bar.displayText, root.cfgFontCss);
+                prevLine.text = "";
+                prevLine.opacity = 0;
+                curLine.text = bar.displayText;
+                curLine.words = bar.titleMode ? null : root.lineWords(root.lineIdx);
+                curLine.opacity = 1;
+                curLine.y = 0;
+                curLine.rebuild();
             }
+            function onLyricsResynced() { curLine.updateFills(); }
         }
-        onTitleModeChanged: if (titleMode) { slideAnim.stop(); curText.opacity = 1; curText.color = Qt.binding(function () { return root.cActive; }); curText.y = Qt.binding(function () { return curText.yBase; }); prevText.opacity = 0; }
+        onTitleModeChanged: if (titleMode) {
+            slideAnim.stop();
+            curLine.words = null;
+            curLine.opacity = 1;
+            curLine.y = 0;
+            prevLine.opacity = 0;
+        }
 
         RowLayout {
             id: row
@@ -959,62 +1207,52 @@ PlasmoidItem {
                 opacity: root.isActive || root.hasTrack ? 1.0 : 0.65
                 Layout.alignment: Qt.AlignVCenter
                 Layout.preferredHeight: bar.thick
-                Layout.preferredWidth: Math.min(curText.implicitWidth + 2, bar.lyricsMaxW, bar.frozenViewportW)
+                Layout.preferredWidth: Math.min(curLine.width + 2, bar.lyricsMaxW, bar.frozenViewportW)
                 clip: true
 
                 Item {
                     id: content
                     height: parent.height
-                    width: curText.implicitWidth
+                    width: curLine.width
 
-                    Text {
-                        textFormat: root.cfgFontCss !== "" ? Text.RichText : Text.PlainText
-                        id: prevText
-                        readonly property real yBase: (content.height - height) / 2
-                        y: yBase
+                    LyricLineView {
+                        id: prevLine
+                        height: content.height
                         opacity: 0
-                        color: root.cActive
-                        font.family: root.cfgFont
-                        font.pixelSize: bar.lyricPx
-                        font.weight: Font.DemiBold
+                        textColor: root.cActive
+                        fontPx: bar.lyricPx
+                        playing: false
+                        sweep: false
                     }
 
-                    Text {
-                        textFormat: root.cfgFontCss !== "" ? Text.RichText : Text.PlainText
-                        id: curText
-                        readonly property real yBase: (content.height - height) / 2
-                        y: yBase
-                        text: Lrc.fontSpan(bar.displayText, root.cfgFontCss)
-                        color: root.cActive
-                        font.family: root.cfgFont
-                        font.pixelSize: bar.lyricPx
-                        font.weight: Font.DemiBold
+                    LyricLineView {
+                        id: curLine
+                        height: content.height
+                        textColor: root.cActive
+                        fontPx: bar.lyricPx
+                        playing: root.isPlaying
+                        sweep: root.wordsAnimEnabled
                     }
 
                     ParallelAnimation {
                         id: slideAnim
                         NumberAnimation {
-                            target: prevText; property: "y"
-                            to: prevText.yBase - bar.thick * 0.55
+                            target: prevLine; property: "y"
+                            to: -bar.thick * 0.55
                             duration: 380; easing.type: Easing.OutCubic
                         }
                         NumberAnimation {
-                            target: prevText; property: "opacity"
+                            target: prevLine; property: "opacity"
                             to: 0; duration: 300; easing.type: Easing.OutQuad
                         }
                         NumberAnimation {
-                            target: curText; property: "y"
-                            to: curText.yBase
+                            target: curLine; property: "y"
+                            to: 0
                             duration: 380; easing.type: Easing.OutCubic
                         }
                         NumberAnimation {
-                            target: curText; property: "opacity"
+                            target: curLine; property: "opacity"
                             to: 1; duration: 260; easing.type: Easing.OutQuad
-                        }
-                        ColorAnimation {
-                            target: curText; property: "color"
-                            to: root.cActive
-                            duration: 420; easing.type: Easing.OutQuad
                         }
                     }
 
@@ -1224,21 +1462,114 @@ PlasmoidItem {
                 scrolling: Plasmoid.configuration.marquee && root.expanded && root.winVisible
             }
 
-            MarqueeText {
+            // lyrics: previous / current / next lines with a roll animation,
+            // the current one sweeps word by word when timings allow
+            Item {
+                id: lyricArea
                 Layout.fillWidth: true
-                visible: root.isActive
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 1.4
                 readonly property bool showLyric: root.haveSynced && root.lineIdx >= 0
-                                                  && root.lineIdx < root.lines.length && root.isPlaying
-                text: showLyric ? (root.lines[root.lineIdx].text || "♪")
-                    : (root.isActive && !root.haveSynced && !root.fetching ? i18n("No synced lyrics found") : " ")
-                font.family: root.cfgFont
-                fontCss: root.cfgFontCss
-                font.italic: showLyric
-                font.pixelSize: showLyric ? Kirigami.Theme.defaultFont.pixelSize : Kirigami.Theme.smallFont.pixelSize
-                color: root.cActive
-                textOpacity: showLyric ? 0.9 : 0.5
-                scrolling: Plasmoid.configuration.marquee && root.expanded && root.winVisible
+                                                  && root.lineIdx < root.lines.length
+                readonly property int prevIdx: showLyric && root.lineIdx > 0 ? root.lineIdx - 1 : -1
+                readonly property int nextIdx: showLyric && root.lineIdx + 1 < root.lines.length
+                                               ? root.lineIdx + 1 : -1
+                readonly property string prevLineText: prevIdx >= 0 ? root.lines[prevIdx].text : ""
+                readonly property string curLineText: showLyric ? (root.lines[root.lineIdx].text || "♪") : ""
+                readonly property string nextLineText: nextIdx >= 0 ? root.lines[nextIdx].text : ""
+                // the roll paces itself to the song like the Dux Lyrical Engine
+                readonly property real moveDur: {
+                    if (!showLyric || root.lineIdx + 1 >= root.lines.length) return 420;
+                    var gap = root.lines[root.lineIdx + 1].t - root.lines[root.lineIdx].t;
+                    return Math.max(400, Math.min(1000, gap * 0.3));
+                }
+                Layout.preferredHeight: showLyric ? curStack.height
+                                        : (root.isActive || root.fetching ? statusLabel.implicitHeight : 0)
+                clip: true
+
+                LyricStack {
+                    id: prevStack
+                    width: parent.width
+                    opacity: 0
+                    sweepMain: false
+                }
+                LyricStack {
+                    id: curStack
+                    width: parent.width
+                }
+                PC3.Label {
+                    id: statusLabel
+                    width: parent.width
+                    visible: !lyricArea.showLyric && (root.isActive || root.fetching)
+                    textFormat: Text.PlainText
+                    text: root.isActive && !root.haveSynced && !root.fetching
+                          ? i18n("No synced lyrics found") : " "
+                    color: root.cActive
+                    opacity: 0.5
+                    font.family: root.cfgFont
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                }
+
+                ParallelAnimation {
+                    id: rollAnim
+                    NumberAnimation {
+                        target: prevStack; property: "y"; to: -prevStack.height * 0.6
+                        duration: lyricArea.moveDur; easing.type: Easing.OutQuint
+                    }
+                    NumberAnimation {
+                        target: prevStack; property: "opacity"; to: 0
+                        duration: lyricArea.moveDur * 0.7; easing.type: Easing.OutQuad
+                    }
+                    NumberAnimation {
+                        target: curStack; property: "y"; to: 0
+                        duration: lyricArea.moveDur; easing.type: Easing.OutQuint
+                    }
+                    NumberAnimation {
+                        target: curStack; property: "opacity"; to: 1
+                        duration: lyricArea.moveDur * 0.7; easing.type: Easing.OutQuad
+                    }
+                }
+
+                function roll() {
+                    rollAnim.stop();
+                    if (!lyricArea.showLyric) {
+                        prevStack.opacity = 0;
+                        prevStack.y = 0;
+                        curStack.opacity = 1;
+                        curStack.y = 0;
+                        curStack.prevText = "";
+                        curStack.mainText = "";
+                        curStack.nextText = "";
+                        curStack.mainWords = null;
+                        return;
+                    }
+                    // capture the outgoing lines before they are replaced
+                    prevStack.prevText = curStack.prevText;
+                    prevStack.mainText = curStack.mainText;
+                    prevStack.nextText = curStack.nextText;
+                    curStack.prevText = lyricArea.prevLineText;
+                    curStack.mainText = lyricArea.curLineText;
+                    curStack.nextText = lyricArea.nextLineText;
+                    curStack.mainWords = root.lineWords(root.lineIdx);
+                    if (prevStack.mainText !== "" && prevStack.mainText !== curStack.mainText
+                            && root.winVisible && root.isPlaying && lyricArea.visible) {
+                        prevStack.opacity = 1;
+                        prevStack.y = 0;
+                        curStack.opacity = 0;
+                        curStack.y = Kirigami.Units.gridUnit * 1.1;
+                        rollAnim.start();
+                    } else {
+                        prevStack.opacity = 0;
+                        prevStack.y = 0;
+                        curStack.opacity = 1;
+                        curStack.y = 0;
+                    }
+                }
+                Component.onCompleted: roll()
+                Connections {
+                    target: root
+                    function onLineIdxChanged() { lyricArea.roll(); }
+                    function onHaveSyncedChanged() { lyricArea.roll(); }
+                    function onWordsAnimEnabledChanged() { lyricArea.roll(); }
+                }
             }
 
             // song progress bar
