@@ -1081,7 +1081,7 @@ PlasmoidItem {
         readonly property real clock: !root.haveSynced ? -1
             : live ? rowClock : (index < centre ? 1e12 : -1)
         readonly property real fontPx: promoted ? (view ? view.leadPx : 16)
-                                                : Math.round((view ? view.leadPx : 16) * 0.8)
+                                                : Math.round((view ? view.leadPx : 16) * 0.82)
         readonly property real rowH: Math.ceil(fontPx * 1.45)
         readonly property real pad: Kirigami.Units.smallSpacing
         readonly property bool timed: !isBreak && root.wordsAnimEnabled
@@ -1092,8 +1092,11 @@ PlasmoidItem {
         width: view ? view.width : 0
         height: isBreak ? Math.ceil((view ? view.breakSize : 16) + pad * 2)
                         : (rows.length > 0 ? rows.length * rowH : rowH) + pad * 2
+        Behavior on height {
+            NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+        }
         opacity: restOpacity
-        Behavior on opacity { NumberAnimation { duration: 220 } }
+        Behavior on opacity { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
         onHeightChanged: if (view && index >= 0 && height > 0) view.heightCache[index] = height
 
         property var rows: []
@@ -1169,8 +1172,8 @@ PlasmoidItem {
         id: ts
 
         readonly property var items: root.lyricItems
-        readonly property real basePx: Math.round(Math.max(Kirigami.Units.gridUnit * 1.1,
-            Math.min(Kirigami.Units.gridUnit * 1.9, ts.height / 12, ts.width / 11)))
+        readonly property real basePx: Math.round(Math.max(Kirigami.Units.gridUnit * 1.35,
+            Math.min(Kirigami.Units.gridUnit * 2.2, ts.height / 10, ts.width / 9.5)))
         // Auto-fitted font: the fit pass walks the size range so every
         // transcript row fits the popup height the user picked. Short lyrics
         // grow, long ones shrink. Falls back to basePx before the first pass.
@@ -1213,11 +1216,34 @@ PlasmoidItem {
         // opacity there anyway)
         FrameAnimation {
             running: ts.visible && root.isPlaying && root.haveSynced
-            onTriggered: ts.now = root.nowMs()
+            onTriggered: {
+                var at = root.nowMs();
+                ts.now = at;
+                // MPRIS position notifications are not guaranteed to arrive
+                // at every lyric boundary. Recalculate the follow target from
+                // the clock itself so the transcript cannot get stuck on an
+                // old centre row.
+                var nextCentre = ts.centreFor(at);
+                if (ts.following && nextCentre !== ts.centre) {
+                    ts.centre = nextCentre;
+                    ts.requestFollow(true);
+                }
+            }
+        }
+
+        function followLineFor(at) {
+            var idx = Lrc.indexFor(root.lines, at);
+            if (idx < 0) return -1;
+            if (idx + 1 < root.lines.length) {
+                var next = root.lines[idx + 1];
+                var leadIn = next.t - (next.move || 500) * 0.4;
+                if (at >= leadIn) return idx + 1;
+            }
+            return idx;
         }
 
         function centreFor(at) {
-            return Lrc.centreItem(ts.items, at, root.followIdx);
+            return Lrc.centreItem(ts.items, at, ts.followLineFor(at));
         }
 
         // Popup-fit search: pick the largest transcript font (scaled by the
@@ -1237,7 +1263,7 @@ PlasmoidItem {
         function fitCost(px) {
             var total = 0;
             var actPx = Math.round(px);
-            var inactPx = Math.round(px * 0.8);
+            var inactPx = Math.round(px * 0.82);
             var n = ts.items.length;
             for (var i = 0; i < n; i++) {
                 var it = ts.items[i];
@@ -1272,7 +1298,7 @@ PlasmoidItem {
             // readable floor: cramming below 70% of the DMS lead size makes
             // long transcripts tiny — once even that cannot fit, the view
             // scrolls at the floor size instead of shrinking into a squint
-            var lo = Math.max(9, Math.round(hi * 0.7));
+            var lo = Math.max(9, Math.round(hi * 0.82));
             var budget = ts.fitBudget();
             var px = lo;
             var all = false;
@@ -1308,7 +1334,7 @@ PlasmoidItem {
             var line = root.lines[it.line];
             if (!line) return 0;
             var promoted = i === ts.centre;
-            var fontPx = promoted ? ts.leadPx : Math.round(ts.leadPx * 0.8);
+            var fontPx = promoted ? ts.leadPx : Math.round(ts.leadPx * 0.82);
             measure.font.pixelSize = fontPx;
             measure.font.weight = promoted ? Font.Bold : Font.DemiBold;
             var rows = Lrc.partRows({ text: line.text, words: root.lineWords(it.line),
@@ -1352,22 +1378,23 @@ PlasmoidItem {
             var animate = ts.animateFollow;
             ts.animateFollow = false;
             if (!root.haveSynced || !ts.following || ts.width <= 0 || ts.items.length === 0) return;
-            var centre = Math.max(0, ts.centre);
-            ts.heightCache = ({});              // re-measure on every follow, DMS style
-            var anchor = lv.itemAtIndex(lv.indexAt(lv.width / 2, lv.contentY + lv.height / 2));
-            if (!anchor || anchor.index < 0)
-                anchor = lv.itemAtIndex(Math.max(0, centre));
-            if (!anchor || anchor.index < 0) {
+            var centre = Math.max(0, Math.min(ts.centre, ts.items.length - 1));
+            var item = lv.itemAtIndex(centre);
+            scrollAnim.stop();
+            if (!item || item.height <= 0 || lv.height <= 0) {
                 lv.positionViewAtIndex(centre, ListView.Center);
                 return;
             }
-            var target = Math.round(anchorOffset(anchor, centre));
+            // Use the actual laid-out delegate geometry. Estimating offsets
+            // from cached text metrics drifted when wrapped rows resized as the
+            // active lyric changed.
+            var maxY = Math.max(0, lv.contentHeight - lv.height);
+            var target = Math.max(0, Math.min(maxY,
+                Math.round(item.y + item.height / 2 - lv.height / 2)));
             var delta = target - lv.contentY;
             if (Math.abs(delta) < 1) return;
-            scrollAnim.stop();
-            // Further than a view away: place instead of scrolling (DMS).
             if (!animate || Math.abs(delta) > ts.height) {
-                lv.positionViewAtIndex(centre, ListView.Center);
+                lv.contentY = target;
                 return;
             }
             scrollAnim.to = target;
@@ -1697,6 +1724,7 @@ PlasmoidItem {
                     readonly property bool overflow: width > viewport.width + 1
                     property real mqX: 0
                     x: overflow ? mqX : Math.max(0, (viewport.width - width) / 2)
+                    onWidthChanged: marqueeCheck()
 
                     LyricLineView {
                         id: prevLine
@@ -1713,6 +1741,7 @@ PlasmoidItem {
                         height: content.height
                         textColor: root.cActive
                         fontPx: bar.lyricPx
+                        fontWeight: Font.Bold
                         playing: root.isPlaying
                         sweep: root.wordsAnimEnabled
                     }
@@ -1887,7 +1916,7 @@ PlasmoidItem {
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
                     width: Math.round(popup.showLyrics
-                                      ? hero.width * 0.52 - hero.gap / 2
+                                      ? hero.width * 0.58 - hero.gap / 2
                                       : 0)
                     Behavior on width {
                         NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
