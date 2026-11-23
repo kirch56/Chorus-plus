@@ -1082,7 +1082,7 @@ PlasmoidItem {
                                                 : Math.round((view ? view.leadPx : 16) * 0.82)
         readonly property real rowH: Math.ceil(fontPx * 1.45)
         readonly property real backgroundFontPx: Math.max(10, Math.round(fontPx * 0.72))
-        readonly property real backgroundRowH: Math.ceil(backgroundFontPx * 1.4)
+        readonly property real backgroundRowH: Math.ceil(backgroundFontPx * 1.5)
         readonly property real backgroundGap: Kirigami.Units.smallSpacing * 0.45
         readonly property real pad: Kirigami.Units.smallSpacing
         readonly property bool timed: !isBreak && root.wordsAnimEnabled
