@@ -1262,20 +1262,27 @@ function dmsArtistCompatible(want, got) {
 // never claim the player's duration when their own response omits it.
 function dmsMetadataProblem(ctx, song) {
     if (!song) return "missing";
+
+    // Metadata matching is only a hard gate when the player explicitly asks
+    // for a distinct edition (Remix, Radio Edit, Live, etc.). Most lyrics APIs
+    // do not return track title or duration at all; rejecting those answers
+    // made ordinary tracks lose every available lyric source.
+    if (!dmsHasVersionTag(ctx.title)) return "";
+
     var durationVerified = ctx.durS > 0 && song.durMs > 0
             && dmsProblemWith(ctx, song) === "";
-    if (ctx.durS > 0 && song.durMs > 0 && !durationVerified)
-        return "duration mismatch";
     if (song.matchArtist && ctx.artist
-            && !dmsArtistCompatible(ctx.artist, song.matchArtist)) return "artist mismatch";
-    var requestedVersioned = dmsHasVersionTag(ctx.title);
-    var candidateVersioned = dmsHasVersionTag(song.matchTitle);
-    if (song.matchTitle && ctx.title && !dmsTitlesEquivalent(ctx.title, song.matchTitle)
-            && !durationVerified && (requestedVersioned || candidateVersioned))
-        return "track/version mismatch";
-    if (requestedVersioned && !song.matchTitle && !durationVerified)
-        return "version not verified";
-    return "";
+            && !dmsArtistCompatible(ctx.artist, song.matchArtist))
+        return "artist mismatch";
+
+    // A provider's exact edition title is stronger evidence than rounded
+    // duration metadata. If it only returns the base title, require a real
+    // source-reported duration match before accepting it as the remix.
+    if (song.matchTitle && dmsTitlesEquivalent(ctx.title, song.matchTitle))
+        return "";
+    if (durationVerified) return "";
+    if (!song.matchTitle) return "version not verified";
+    return "track/version mismatch";
 }
 
 
