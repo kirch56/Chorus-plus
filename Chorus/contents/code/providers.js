@@ -46,31 +46,51 @@ function parseTTMLTime(str) {
     return Math.round(sec * 1000);
 }
 
-// Apple Music style TTML nests echo / background-vocal groups in wrapper
-// spans that carry no timing of their own (<span ttm:role="x-bg"><span
-// begin="..">(My</span>...). A flat per-word scan eats the wrapper's first
-// child and drops the whole group, so every wrapper without begin=/end= is
-// unwrapped first and only the timed leaves stay.
+// SyncLRC can return Apple-style TTML with parallel translation and
+// romanization spans (ttm:role="x-translation"/"x-roman"). Those are separate
+// lyric tracks, not words from the lead vocal. Exclude them before flattening,
+// otherwise every translation is rendered on top of the original line.
+function ttmlIsNonLeadRole(tag) {
+    var m = /(?:[\w.-]+:)?role\s*=\s*["']([^"']+)["']/i.exec(String(tag));
+    if (!m) return false;
+    var roles = m[1].split(/\s+/);
+    for (var i = 0; i < roles.length; i++)
+        if (/^(?:x-translation|x-roman|x-transliteration|translation|romanization|transliteration)$/i.test(roles[i]))
+            return true;
+    return false;
+}
+
+// Unwrap untimed structural spans but preserve timed word spans. Translation
+// and romanization subtrees are omitted entirely; their nested timed spans
+// must not leak into the lead-vocal word sequence.
 function flattenTtmlSpans(s) {
     var toks = [], re = /<\/?span\b[^>]*>/g, m, last = 0;
     while ((m = re.exec(s)) !== null) {
         if (m.index > last)
             toks.push({ t: "x", s: s.slice(last, m.index) });
         toks.push({ t: m[0].charAt(1) === "/" ? "c" : "o", s: m[0],
-                    timed: /\b(?:begin|end)\s*=/.test(m[0]) });
+                    timed: /\b(?:begin|end)\s*=/.test(m[0]),
+                    nonLead: ttmlIsNonLeadRole(m[0]),
+                    selfClosing: /\/\s*>$/.test(m[0]) });
         last = re.lastIndex;
     }
     if (last < s.length)
         toks.push({ t: "x", s: s.slice(last) });
-    var out = "", stack = [];
+    var out = "", stack = [], skipped = 0;
     for (var i = 0; i < toks.length; i++) {
         var tk = toks[i];
         if (tk.t === "o") {
-            stack.push(tk.timed);
-            if (tk.timed) out += tk.s;
+            var excluded = skipped > 0 || tk.nonLead;
+            if (!tk.selfClosing) {
+                stack.push({ excluded: excluded, timed: tk.timed && !excluded });
+                if (excluded) skipped++;
+            }
+            if (!excluded && tk.timed) out += tk.s;
         } else if (tk.t === "c") {
-            if (stack.pop()) out += tk.s;
-        } else {
+            var frame = stack.pop();
+            if (frame && frame.excluded) skipped--;
+            else if (frame && frame.timed) out += tk.s;
+        } else if (skipped === 0) {
             out += tk.s;
         }
     }
@@ -113,14 +133,21 @@ function ttmlToSong(ttml) {
     var re = /<p\b[^>]*?begin="([^"]+)"[^>]*>([\s\S]*?)<\/p>/g;
     var m;
     while ((m = re.exec(String(ttml))) !== null) {
-        var t = parseTTMLTime(m[1]);
         var open = m[0].slice(0, m[0].indexOf(">"));
+        // Some TTML documents represent translations as separate paragraphs.
+        // They share timestamps with the original, so accepting them creates
+        // stacked multilingual lines in players that only show one lyric lane.
+        if (ttmlIsNonLeadRole(open)) continue;
+        var t = parseTTMLTime(m[1]);
         var endM = /\bend\s*=\s*["']([^"']+)["']/.exec(open);
         var e = endM ? parseTTMLTime(endM[1]) : 0;
         var words = parseTTMLWords(m[2]);
         // Same echo spacing as parseTTMLWords applies to the words: glued
         // "(Echo)" groups are spaced off the main vocal in the rendered text.
-        var text = m[2].replace(/<[^>]*>/g, "").replace(/([^\s(（])\(/g, "$1 (")
+        // Use the filtered span tree here too, so translation text cannot
+        // re-enter the visible line after its word timings were discarded.
+        var leadInner = flattenTtmlSpans(m[2]);
+        var text = leadInner.replace(/<[^>]*>/g, "").replace(/([^\s(（])\(/g, "$1 (")
                    .replace(/\s+/g, " ").trim();
         if (t < 0 || text === "") continue;
         out.push({ t: t, e: e > t ? e : 0, text: text, words: words });
