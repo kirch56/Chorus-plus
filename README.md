@@ -51,24 +51,25 @@ https://github.com/user-attachments/assets/aff481a7-01e9-43f6-9053-7931b17a784e
 - **Word-by-word sync**: when a source carries word timings (LRCLIB lyricsfiles, Better Lyrics / Unison TTML, LyricsPlus Musixmatch word sync), words light up one by one as they are sung — an Apple Music style karaoke sweep in the panel and the popup. Providers with word timings are tried first, and it can be turned off under **Look & Feel → Word sync / Animation**.
 - Works with **any media player**: Spotify, YouTube Music, VLC, etc.
 - Album cover, current lyric, playback controls, seek bar, shuffle/repeat, volume slider.
+- **Fixed panel width** (default) keeps the bar compact — set the exact pixel width, or uncheck it to fit the current lyric line (min/max width in % of screen).
 - Custom font with **multiple font** support, colors, width, font scale and other **customisation** features.
 - **In-widget music search** via YouTube Music or Spotify. See [SETUP.md](SETUP.md).
 - Horizontal **and** vertical panels; content rotates to read along the panel.
 
 ## Manual Install
 
-Download from the [KDE Store](https://store.kde.org/p/2370699) or [GitHub releases](https://github.com/Netherizzium/chorus/releases).
+Download from the [GitHub releases](https://github.com/kirch56/Chorus-plus/releases) of this fork (or the [KDE Store](https://store.kde.org/p/2370699) for the original Chorus).
 
 To install:
 
 ```sh
-kpackagetool6 -t Plasma/Applet -i chorus.plasmoid
+kpackagetool6 -t Plasma/Applet -i chorus-plus.plasmoid
 ```
 
 To update:
 
 ```sh
-kpackagetool6 -t Plasma/Applet -u chorus.plasmoid
+kpackagetool6 -t Plasma/Applet -u chorus-plus.plasmoid
 ```
 
 > [!NOTE]  
@@ -84,7 +85,7 @@ Synced lyrics come from [LRCLIB](https://lrclib.net), a free and open-source lyr
 4. **KuGou** — the [KuGou](https://www.kugou.com) lyrics library, great for CJK songs (line-level only)
 5. **YouTube Music** — timed captions from YouTube's InnerTube API; YouTube blocks some networks entirely, so this one may be unavailable depending on where you are (line-level only)
 
-With **Word-sync providers first** enabled (default), sources that can deliver word timings are tried before line-level ones: if LRCLIB only has line-level lyrics for a song, Better Lyrics, Unison and LyricsPlus still get a chance to provide word timings before the line-level result is used. With the option off, the list above is followed in exactly the given order.
+With **Word-sync providers first** enabled (default), sources that can deliver word timings are tried before line-level ones: if LRCLIB only has line-level lyrics for a song, they are shown right away, and Better Lyrics, Unison and LyricsPlus are asked in the background for word timings — as soon as one of them has them, the lyrics upgrade mid-song to the word-by-word sweep. With the option off, the list above is followed in exactly the given order and the first hit wins.
 
 The **Word-by-word karaoke sweep** animation (Apple Music style, borrowed from DMS 2.0's Dux Lyrical Engine) fills each word with the highlight color as it is sung, with a soft smoothing window so short syllables glide instead of flicking. Songs without word timings keep the classic line-by-line behavior.
 

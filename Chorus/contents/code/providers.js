@@ -150,11 +150,29 @@ function b64ToUtf8(b64) {
     return out;
 }
 
+// Unwrap a lyrics payload that may arrive either as raw TTML or as a JSON
+// envelope { "ttml": "..." } (what api.betterlyrics.org actually returns;
+// the TTML inside is unescaped by JSON.parse). Returns the TTML string or
+// null when the payload is neither.
+function unwrapTtml(resp) {
+    if (!resp) return null;
+    var s = String(resp).replace(/^\uFEFF/, "").trim();
+    if (s.charAt(0) === "{") {
+        try {
+            var j = JSON.parse(s);
+            if (j && typeof j.ttml === "string" && j.ttml !== "") return j.ttml;
+            if (j && typeof j.lyrics === "string" && j.lyrics !== "") return j.lyrics;
+        } catch (e) {}
+        return null;
+    }
+    return s.indexOf("<") !== -1 ? s : null;
+}
+
 // ---------- Better Lyrics ----------
 // 1. GET https://api.betterlyrics.org/getLyrics?s={song}&a={artist}&al={album}&d={duration}
-//    Returns TTML (itunes:timing="Word" when word timings exist). Cache hits
-//    need no key; cache misses return 401 (no keys are being issued), which we
-//    treat as "no lyrics here".
+//    Returns { ttml: "<tt ...>...</tt>" } (Apple Music TTML, itunes:timing="Word"
+//    when word timings exist). Cache hits need no key; cache misses return 401
+//    (no keys are being issued), which we treat as "no lyrics here".
 // 2. Fallback: GET /kugou/getLyrics?s={song}&a={artist}&d={duration}
 //    Returns { lyrics: "...LRC..." } and never needs a key.
 
@@ -165,7 +183,7 @@ function fetchBetterLyrics(ctx, cb) {
             + "&d=" + (ctx.durS > 0 ? ctx.durS : 0);
     ctx.httpGet(url, function (ok, resp) {
         if (ctx.isStale()) return;
-        var song = ok && resp ? ttmlToSong(resp) : null;
+        var song = ok ? ttmlToSong(unwrapTtml(resp)) : null;
         if (song) { cb(song); return; }
         var url2 = "https://api.betterlyrics.org/kugou/getLyrics?s=" + encodeURIComponent(ctx.title)
                  + "&a=" + encodeURIComponent(ctx.artist)

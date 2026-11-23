@@ -72,7 +72,10 @@
       <default>0.5</default>
     </entry>
     <entry name="minFrac" type="Double">
-      <default>0.35</default>
+      <default>0.12</default>
+    </entry>
+    <entry name="barWidthPx" type="Int">
+      <default>420</default>
     </entry>
     <entry name="extraQueue" type="Int">
       <default>5</default>

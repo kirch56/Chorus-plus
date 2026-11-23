@@ -14,6 +14,7 @@ KCM.SimpleKCM {
     property double cfg_fontScale
     property double cfg_minFrac
     property double cfg_maxFrac
+    property int cfg_barWidthPx
     property string cfg_activeColor
     property alias cfg_hideWhenIdle: hideIdleCheck.checked
     property alias cfg_showVolumeBar: volumeCheck.checked
@@ -28,6 +29,7 @@ KCM.SimpleKCM {
     readonly property int maxFallbacks: 5
     property var fontDialogField: null
     property int nextUid: 1
+    property int lastBarWidth: 420
 
     // Extra lyrics providers, shown as checkboxes and stored as a StringList.
     readonly property var providerIds: ["betterlyrics", "unison", "lyricsplus", "kugou", "youtube"]
@@ -211,14 +213,53 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: i18n("Min width (% of screen):")
             from: 0; to: 80; stepSize: 5
             value: 35
-            Component.onCompleted: value = Math.round((page.cfg_minFrac || 0.35) * 100)
+            enabled: !fixedWidthCheck.checked
+            Component.onCompleted: value = Math.round((page.cfg_minFrac || 0.12) * 100)
         }
         QQC2.SpinBox {
             id: maxFracSpin
             Kirigami.FormData.label: i18n("Max width (% of screen):")
             from: 10; to: 90; stepSize: 5
             value: 50
+            enabled: !fixedWidthCheck.checked
             Component.onCompleted: value = Math.round((page.cfg_maxFrac || 0.5) * 100)
+        }
+        QQC2.CheckBox {
+            id: fixedWidthCheck
+            Kirigami.FormData.label: i18n("Panel width:")
+            text: i18n("Fixed bar width")
+            Component.onCompleted: checked = page.cfg_barWidthPx > 0
+            onToggled: {
+                if (checked) {
+                    barWidthSpin.value = Math.max(barWidthSpin.from, page.lastBarWidth)
+                    page.cfg_barWidthPx = barWidthSpin.value
+                } else {
+                    page.lastBarWidth = barWidthSpin.value
+                    page.cfg_barWidthPx = 0
+                }
+            }
+        }
+        QQC2.SpinBox {
+            id: barWidthSpin
+            Kirigami.FormData.label: i18n("Bar width (px):")
+            from: 220; to: 3840; stepSize: 10
+            editable: true
+            enabled: fixedWidthCheck.checked
+            textFromValue: function (value) { return value + " px" }
+            valueFromText: function (text) { return parseInt(text) }
+            Component.onCompleted: {
+                var v = page.cfg_barWidthPx > 0 ? page.cfg_barWidthPx : 420
+                value = Math.max(from, Math.min(to, v))
+            }
+            onValueChanged: if (page.ready && fixedWidthCheck.checked)
+                page.cfg_barWidthPx = value
+        }
+        QQC2.Label {
+            text: i18n("A fixed width keeps the panel widget compact instead of stretching along the whole screen. Uncheck it to let the widget fit the current lyric line (min/max above). Long lines scroll inside the widget either way.")
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 22
         }
 
         Item { Kirigami.FormData.isSection: true }
@@ -285,7 +326,7 @@ KCM.SimpleKCM {
 
         QQC2.Label {
             Kirigami.FormData.label: i18n("Lyrics providers:")
-            text: i18n("Fallback sources tried in order when LRCLIB has no synced lyrics:")
+            text: i18n("Extra sources tried in order when LRCLIB has no synced lyrics, or when it only has line-level lyrics but one of these can supply word-level timings:")
             font: Kirigami.Theme.smallFont
             opacity: 0.7
             wrapMode: Text.WordWrap
@@ -307,7 +348,7 @@ KCM.SimpleKCM {
             text: i18n("Word-sync providers first")
         }
         QQC2.Label {
-            text: i18n("Try Better Lyrics, Unison and LyricsPlus (word-level timings) before the line-level sources. LRCLIB songs with word timings always win.")
+            text: i18n("Try Better Lyrics, Unison and LyricsPlus (word-level timings) before the line-level sources. Line-level lyrics show right away and are upgraded to a word-by-word sweep as soon as one of them has word timings. LRCLIB songs with word timings always win.")
             font: Kirigami.Theme.smallFont
             opacity: 0.7
             wrapMode: Text.WordWrap

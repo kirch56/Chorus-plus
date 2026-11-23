@@ -212,7 +212,7 @@ function fillEdge(segs, at, sweep, lead) {
         var s = segs[i];
         if (s.t > at) continue;
         var p = (sweep && s.e > s.t) ? Math.min(1, (at - s.t) / (s.e - s.t)) : 1;
-        var from = s.x0 > 0 ? s.x0 : -lead;
+        var from = s.x0 >= 0 ? s.x0 : -lead;
         edge = Math.max(edge, from + (s.x1 - from) * p);
     }
     return edge;

@@ -408,9 +408,18 @@ PlasmoidItem {
             if (song) {
                 console.log("[chorus] lyrics: LRCLIB match"
                             + (song.wordSync ? " (word-level)" : " (line-level)"));
-                root.fetching = false;
-                root.rememberCache(key, song);
-                root.applyLyrics(song);
+                if (song.wordSync) {
+                    root.fetching = false;
+                    root.rememberCache(key, song);
+                    root.applyLyrics(song);
+                } else {
+                    // Show the line-level lyrics right away, then ask the
+                    // word-sync providers for a karaoke upgrade: fetchAll
+                    // re-applies (and caches) whatever wins in the end.
+                    root.fetching = false;
+                    root.applyLyrics(song);
+                    root.fetchExtraProviders(key, durS, song);
+                }
                 return;
             }
             root.httpGet("https://lrclib.net/api/search?track_name=" + encodeURIComponent(root.trackTitle)
@@ -435,9 +444,15 @@ PlasmoidItem {
                     if (song2) {
                         console.log("[chorus] lyrics: LRCLIB match (search)"
                                     + (song2.wordSync ? " (word-level)" : " (line-level)"));
-                        root.fetching = false;
-                        root.rememberCache(key, song2);
-                        root.applyLyrics(song2);
+                        if (song2.wordSync) {
+                            root.fetching = false;
+                            root.rememberCache(key, song2);
+                            root.applyLyrics(song2);
+                        } else {
+                            root.fetching = false;
+                            root.applyLyrics(song2);
+                            root.fetchExtraProviders(key, durS, song2);
+                        }
                     } else {
                         root.fetchExtraProviders(key, durS, null);
                     }
@@ -447,8 +462,8 @@ PlasmoidItem {
 
     // Extra lyrics providers (Better Lyrics, Unison, LyricsPlus, KuGou, YouTube
     // Music). With word-sync priority the word-level capable ones are tried
-    // first; lineFallback (LRCLIB line-level lyrics) is only used when no
-    // provider returns word timings.
+    // first and lineFallback (e.g. line-level lyrics from LRCLIB, shown in the
+    // meantime) is only kept when no provider returns word timings.
     function fetchExtraProviders(key, durS, lineFallback) {
         var ctx = {
             title: trackTitle,
@@ -848,6 +863,9 @@ PlasmoidItem {
         property bool playing: false        // drives the per-frame sweep clock
         property color textColor: root.cActive
         property real fontPx: 14
+        property int fontWeight: Font.DemiBold
+        property bool elidePlain: false     // clip long plain lines with "..."
+        property bool shrinkToFit: false    // scale a long word row down to fit
 
         readonly property bool hasWords: sweep && fragRepeater.count > 1
 
@@ -903,17 +921,22 @@ PlasmoidItem {
             textFormat: root.cfgFontCss !== "" ? Text.RichText : Text.PlainText
             visible: !lineView.hasWords
             text: lineView.hasWords ? "" : Lrc.fontSpan(lineView.text, root.cfgFontCss)
+            width: lineView.elidePlain ? lineView.width : implicitWidth
+            elide: lineView.elidePlain ? Text.ElideRight : Text.ElideNone
             anchors.verticalCenter: parent.verticalCenter
             color: lineView.textColor
             font.family: root.cfgFont
             font.pixelSize: lineView.fontPx
-            font.weight: Font.DemiBold
+            font.weight: lineView.fontWeight
         }
 
         Row {
             id: fragRow
             visible: lineView.hasWords
             anchors.verticalCenter: parent.verticalCenter
+            scale: lineView.shrinkToFit && lineView.width > 0
+                   ? Math.min(1, lineView.width / fragRow.implicitWidth) : 1
+            transformOrigin: Item.Left
 
             Repeater {
                 id: fragRepeater
@@ -937,7 +960,7 @@ PlasmoidItem {
                         color: root.cInactive
                         font.family: root.cfgFont
                         font.pixelSize: lineView.fontPx
-                        font.weight: Font.DemiBold
+                        font.weight: lineView.fontWeight
                     }
 
                     // the sung part, clipped to the sweep edge
@@ -957,7 +980,7 @@ PlasmoidItem {
                             color: root.cActive
                             font.family: root.cfgFont
                             font.pixelSize: lineView.fontPx
-                            font.weight: Font.DemiBold
+                            font.weight: lineView.fontWeight
                         }
                     }
                 }
@@ -989,22 +1012,24 @@ PlasmoidItem {
             visible: stack.prevText !== ""
             text: stack.prevText
             color: root.cActive
-            opacity: 0.45
+            opacity: 0.4
             font.family: root.cfgFont
-            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
+            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * 0.85
         }
         LyricLineView {
             id: mainSlot
             y: prevLabel.height + Kirigami.Units.smallSpacing
             width: parent.width
-            height: Kirigami.Theme.defaultFont.pixelSize * 1.7
             visible: stack.mainText !== ""
             text: stack.mainText
             words: stack.mainWords
             sweep: stack.sweepMain
             playing: root.isPlaying
             textColor: root.cActive
-            fontPx: Kirigami.Theme.defaultFont.pixelSize * 1.25
+            fontPx: Kirigami.Theme.defaultFont.pixelSize * 1.45
+            fontWeight: Font.Bold
+            elidePlain: true
+            shrinkToFit: true
         }
         Text {
             id: nextLabel
@@ -1016,7 +1041,7 @@ PlasmoidItem {
             color: root.cActive
             opacity: 0.3
             font.family: root.cfgFont
-            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
+            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * 0.85
         }
     }
 
@@ -1056,26 +1081,37 @@ PlasmoidItem {
                                                     - coverSize - buttonsRow.width - 8 * pad)
         readonly property int lyricPx: Math.max(10, Math.round(thick * 0.46 * Plasmoid.configuration.fontScale))
 
-        readonly property real liveLen: shown ? Math.max(row.implicitWidth, minTotalW) : 0
+        // Fixed bar width (barWidthPx, 0 = auto). The lyrics viewport soaks up
+        // whatever is left of the fixed width after the cover and buttons.
+        readonly property bool fixedW: !vertical && Plasmoid.configuration.barWidthPx > 0
+        readonly property real fixedChromeW: (Plasmoid.configuration.showCover ? coverSize : 0)
+                + buttonsRow.implicitWidth + 2 + 6 * pad
+        readonly property real fixedPx: fixedW
+                ? Math.max(220, Plasmoid.configuration.barWidthPx, fixedChromeW + 100)
+                : 0
+
+        readonly property real liveLen: shown
+            ? (fixedW ? fixedPx : Math.max(row.implicitWidth, minTotalW))
+            : 0
         property real frozenLen: 0
         property real frozenViewportW: Number.POSITIVE_INFINITY
         readonly property bool hold: root.expanded || barHover.hovered
         readonly property real contentLen: hold ? Math.max(frozenLen, liveLen) : liveLen
         function captureFrozen() {
-            var fixedW = row.implicitWidth - viewport.Layout.preferredWidth;
+            var chromeW = row.implicitWidth - viewport.Layout.preferredWidth;
             var uncappedVw = Math.min(curLine.width + 2, lyricsMaxW);
-            frozenLen = shown ? Math.max(fixedW + uncappedVw, minTotalW) : 0;
-            frozenViewportW = Math.max(0, frozenLen - fixedW);
+            frozenLen = shown ? Math.max(chromeW + uncappedVw, minTotalW) : 0;
+            frozenViewportW = Math.max(0, frozenLen - chromeW);
         }
         onHoldChanged: {
             if (hold) {
-                captureFrozen();
+                if (!fixedW) captureFrozen();
             } else {
                 frozenLen = 0;
                 frozenViewportW = Number.POSITIVE_INFINITY;
             }
         }
-        onShownChanged: if (hold) captureFrozen()
+        onShownChanged: if (hold && !fixedW) captureFrozen()
         HoverHandler { id: barHover }
         Layout.preferredWidth: vertical ? -1 : contentLen
         Layout.minimumWidth: vertical ? 0 : contentLen
@@ -1200,14 +1236,20 @@ PlasmoidItem {
                 opacity: 0.25
             }
 
-            Item { Layout.fillWidth: true; Layout.preferredWidth: bar.pad }
+            Item {
+                Layout.fillWidth: !bar.fixedW
+                Layout.preferredWidth: bar.fixedW ? 0 : bar.pad
+            }
 
             Item {
                 id: viewport
                 opacity: root.isActive || root.hasTrack ? 1.0 : 0.65
                 Layout.alignment: Qt.AlignVCenter
+                Layout.fillWidth: bar.fixedW
                 Layout.preferredHeight: bar.thick
-                Layout.preferredWidth: Math.min(curLine.width + 2, bar.lyricsMaxW, bar.frozenViewportW)
+                Layout.preferredWidth: bar.fixedW
+                                      ? 0
+                                      : Math.min(curLine.width + 2, bar.lyricsMaxW, bar.frozenViewportW)
                 clip: true
 
                 Item {
@@ -1290,7 +1332,10 @@ PlasmoidItem {
                 }
             }
 
-            Item { Layout.fillWidth: true; Layout.preferredWidth: bar.pad }
+            Item {
+                Layout.fillWidth: !bar.fixedW
+                Layout.preferredWidth: bar.fixedW ? 0 : bar.pad
+            }
 
             Rectangle {
                 Layout.preferredWidth: 1
