@@ -126,7 +126,7 @@ function ttmlJoinWordText(words) {
 // Word-level spans inside a TTML <p>. Explicit whitespace is retained;
 // missing boundaries between timed English words are reconstructed. Translation,
 // romanization and background spans have already been filtered.
-function parseTTMLWords(inner) {
+function parseTTMLWords(inner, preserveSourceSpacing) {
     var flat = flattenTtmlSpans(String(inner));
     var re = /<span\b([^>]*)>([\s\S]*?)<\/span>([\s\S]*?)(?=<span\b|$)/g;
     var words = [], m;
@@ -145,14 +145,14 @@ function parseTTMLWords(inner) {
     for (var i = 1; i < words.length; i++)
         if (/^[(（]/.test(words[i].text) && !/\s$/.test(words[i - 1].text))
             words[i - 1].text += " ";
-    ttmlSpaceWordTokens(words);
+    if (!preserveSourceSpacing) ttmlSpaceWordTokens(words);
     return words.length >= 2 ? words : null;
 }
 
 // TTML -> song object. Regex-based because the QML JS engine has no DOMParser.
 // Apple Music style TTML (itunes:timing="Word") carries one <span> per word;
 // when a line has at least two timed spans it becomes a word-level line.
-function ttmlToSong(ttml) {
+function ttmlToSong(ttml, preserveSourceSpacing) {
     if (!ttml || String(ttml).indexOf("<") === -1) return null;
     var out = [];
     var re = /<p\b[^>]*?begin="([^"]+)"[^>]*>([\s\S]*?)<\/p>/g;
@@ -165,7 +165,7 @@ function ttmlToSong(ttml) {
         var t = parseTTMLTime(m[1]);
         var endM = /\bend\s*=\s*["']([^"']+)["']/.exec(open);
         var e = endM ? parseTTMLTime(endM[1]) : 0;
-        var words = parseTTMLWords(m[2]);
+        var words = parseTTMLWords(m[2], preserveSourceSpacing);
         // Same echo spacing as parseTTMLWords applies to the words: glued
         // "(Echo)" groups are spaced off the main vocal in the rendered text.
         // Use the filtered span tree here too, so translation text cannot
@@ -1067,7 +1067,7 @@ function fetchLrcRed(ctx, cb) {
                     ? track.files.ttml : "https://lrc.red/s/" + encodeURIComponent(hit.isrc) + ".ttml";
             ctx.httpGet(ttmlUrl, function (ok3, resp3) {
                 if (ctx.isStale()) return;
-                var song = ok3 ? ttmlToSong(unwrapTtml(resp3)) : null;
+                var song = ok3 ? ttmlToSong(unwrapTtml(resp3), true) : null;
                 if (song) {
                     song.providerName = "lrc.red";
                     song.durMs = typeof track.duration === "number"
