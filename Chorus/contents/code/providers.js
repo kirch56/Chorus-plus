@@ -135,7 +135,8 @@ function parseTTMLWords(inner) {
         var et = /\bend\s*=\s*["']([^"']+)["']/.exec(m[1]);
         var t = bt ? parseTTMLTime(bt[1]) : -1;
         var e = et ? parseTTMLTime(et[1]) : 0;
-        var text = m[2].replace(/<[^>]*>/g, "");
+        var text = m[2].replace(/<[^>]*>/g, "")
+                   .replace(/\{agent:[^}]*\}/gi, "").replace(/\{bg\}/gi, "");
         var gap = m[3].replace(/<[^>]*>/g, "");
         if (t < 0 || text.replace(/\s/g, "") === "") continue;
         if (gap !== "" && !/\S/.test(gap)) text += gap;
@@ -158,10 +159,9 @@ function ttmlToSong(ttml) {
     var m;
     while ((m = re.exec(String(ttml))) !== null) {
         var open = m[0].slice(0, m[0].indexOf(">"));
-        // Some TTML documents represent translations as separate paragraphs.
-        // They share timestamps with the original, so accepting them creates
-        // stacked multilingual lines in players that only show one lyric lane.
-        if (ttmlIsNonLeadRole(open)) continue;
+        // Role-marked non-lead paragraphs are separate lyric lanes. Some
+        // SyncLRC fallback TTML may also carry its {bg} marker as plain text.
+        if (ttmlIsNonLeadRole(open) || /\{bg\}/i.test(m[2])) continue;
         var t = parseTTMLTime(m[1]);
         var endM = /\bend\s*=\s*["']([^"']+)["']/.exec(open);
         var e = endM ? parseTTMLTime(endM[1]) : 0;
@@ -172,8 +172,9 @@ function ttmlToSong(ttml) {
         // re-enter the visible line after its word timings were discarded.
         var leadInner = flattenTtmlSpans(m[2]);
         var text = words ? ttmlJoinWordText(words)
-                   : leadInner.replace(/<[^>]*>/g, "").replace(/([^\s(（])\(/g, "$1 (")
-                     .replace(/\s+/g, " ").trim();
+                   : leadInner.replace(/<[^>]*>/g, "")
+                     .replace(/\{agent:[^}]*\}/gi, "").replace(/\{bg\}/gi, "")
+                     .replace(/([^\s(（])\(/g, "$1 (").replace(/\s+/g, " ").trim();
         if (t < 0 || text === "") continue;
         out.push({ t: t, e: e > t ? e : 0, text: text, words: words });
     }
