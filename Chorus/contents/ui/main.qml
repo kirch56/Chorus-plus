@@ -1118,55 +1118,103 @@ PlasmoidItem {
         property bool following: true
         property int centre: -1
         property real now: 0
+        property bool animateFollow: false
         property var heightCache: ({})
-        property bool programmatic: false
 
         Component.onCompleted: {
             ts.now = root.nowMs();
             ts.centre = centreFor(ts.now);
         }
 
-        // the promoted row's sweep needs a per-frame clock
+        // the promoted row's sweep needs a per-frame clock; it keeps running
+        // while the user browses, like the DMS clock (rows rest at full
+        // opacity there anyway)
         FrameAnimation {
-            running: ts.visible && root.isPlaying && root.haveSynced && ts.following
+            running: ts.visible && root.isPlaying && root.haveSynced
             onTriggered: ts.now = root.nowMs()
         }
 
         function centreFor(at) {
             return Lrc.centreItem(ts.items, at, root.followIdx);
         }
-        function rowHeightAt(i) {
-            if (ts.heightCache[i] !== undefined && ts.heightCache[i] > 0)
-                return ts.heightCache[i];
+
+        // The exact height of one item, laid out the way LyricRow lays it
+        // out, so scroll targets stay right for rows the view has never
+        // built. DMS measures the same way instead of trusting guesses —
+        // wrapped lines are several rows tall and guesses miss by hundreds
+        // of pixels.
+        function itemHeightAt(i) {
             var it = ts.items[i];
             if (!it) return 0;
-            return (it.kind === "break" ? ts.breakSize : Math.round(ts.leadPx * 0.8) * 1.45)
-                   + Kirigami.Units.smallSpacing * 2;
+            if (it.kind === "break")
+                return Math.ceil(ts.breakSize) + Kirigami.Units.smallSpacing * 2;
+            var line = root.lines[it.line];
+            if (!line) return 0;
+            var promoted = i === ts.centre;
+            var fontPx = promoted ? ts.leadPx : Math.round(ts.leadPx * 0.8);
+            measure.font.pixelSize = fontPx;
+            measure.font.weight = promoted ? Font.Bold : Font.DemiBold;
+            var rows = Lrc.partRows({ text: line.text, words: root.lineWords(it.line),
+                                      t: line.t, e: line.e }, ts.width, function (s) {
+                measure.text = s;
+                return measure.advanceWidth;
+            });
+            return rows.length * Math.ceil(fontPx * 1.45) + Kirigami.Units.smallSpacing * 2;
+        }
+        function rowHeightAt(i) {
+            if (ts.heightCache[i] !== undefined) return ts.heightCache[i];
+            var h = itemHeightAt(i);
+            ts.heightCache[i] = h;
+            return h;
         }
         function moveDurFor(c) {
             var it = ts.items[c];
             if (!it || it.kind === "break" || it.line <= 0 || !root.lines[it.line]) return 420;
             return Math.max(400, Math.min(1000, root.lines[it.line].move || 500));
         }
-        function targetOffset(c) {
-            var y = ts.endPadding;
-            for (var i = 0; i < c; i++) y += rowHeightAt(i) + lv.spacing;
-            y += rowHeightAt(c) / 2 - ts.height / 2;
-            return Math.max(0, y);
+
+        // Anchored on a row the view really placed, so estimate drift cannot
+        // accumulate over long lists (DMS centreOffset).
+        function anchorOffset(anchor, centre) {
+            var y = anchor.y;
+            if (centre > anchor.index) {
+                for (var i = anchor.index; i < centre; i++)
+                    y += rowHeightAt(i) + lv.spacing;
+            } else {
+                for (var j = centre; j < anchor.index; j++)
+                    y -= rowHeightAt(j) + lv.spacing;
+            }
+            return Math.max(0, y + rowHeightAt(centre) / 2 - ts.height / 2);
         }
-        function follow(animate) {
-            if (!root.haveSynced || !ts.following || ts.width <= 0) return;
-            var target = targetOffset(Math.max(0, ts.centre));
-            if (Math.abs(target - lv.contentY) < 1) return;
+
+        function requestFollow(animate) {
+            ts.animateFollow = animate && (followTimer.running ? ts.animateFollow : true);
+            followTimer.restart();
+        }
+        function followCurrent() {
+            var animate = ts.animateFollow;
+            ts.animateFollow = false;
+            if (!root.haveSynced || !ts.following || ts.width <= 0 || ts.items.length === 0) return;
+            var centre = Math.max(0, ts.centre);
+            ts.heightCache = ({});              // re-measure on every follow, DMS style
+            var anchor = lv.itemAtIndex(lv.indexAt(lv.width / 2, lv.contentY + lv.height / 2));
+            if (!anchor || anchor.index < 0)
+                anchor = lv.itemAtIndex(Math.max(0, centre));
+            if (!anchor || anchor.index < 0) {
+                lv.positionViewAtIndex(centre, ListView.Center);
+                return;
+            }
+            var target = Math.round(anchorOffset(anchor, centre));
+            var delta = target - lv.contentY;
+            if (Math.abs(delta) < 1) return;
             scrollAnim.stop();
-            if (!animate || Math.abs(target - lv.contentY) > ts.height * 2) {
-                ts.programmatic = true;
-                lv.contentY = target;
-                ts.programmatic = false;
+            // Further than a view away: place instead of scrolling (DMS).
+            if (!animate || Math.abs(delta) > ts.height) {
+                lv.positionViewAtIndex(centre, ListView.Center);
                 return;
             }
             scrollAnim.to = target;
-            scrollAnim.duration = moveDurFor(ts.centre);
+            scrollAnim.duration = moveDurFor(centre);
             scrollAnim.restart();
         }
         function browse() {
@@ -1180,13 +1228,11 @@ PlasmoidItem {
             ts.now = root.nowMs();
             ts.centre = centreFor(ts.now);
             scrollAnim.stop();
-            ts.programmatic = true;
             lv.contentY = 0;
-            ts.programmatic = false;
-            followTimer.restart();
+            requestFollow(false);
         }
-        onWidthChanged: followTimer.restart()
-        onHeightChanged: followTimer.restart()
+        onWidthChanged: requestFollow(false)
+        onHeightChanged: requestFollow(false)
         onFollowingChanged: if (!ts.following) scrollAnim.stop()
 
         NumberAnimation {
@@ -1195,13 +1241,11 @@ PlasmoidItem {
             property: "contentY"
             duration: 420
             easing.type: Easing.OutQuint
-            onStarted: ts.programmatic = true
-            onStopped: ts.programmatic = false
         }
         Timer {
             id: followTimer
             interval: 0
-            onTriggered: ts.follow(true)
+            onTriggered: ts.followCurrent()
         }
 
         Connections {
@@ -1209,12 +1253,12 @@ PlasmoidItem {
             function onFollowIdxChanged() {
                 ts.centre = ts.centreFor(root.nowMs());
                 ts.now = root.nowMs();
-                followTimer.restart();
+                ts.requestFollow(true);
             }
             function onLineIdxChanged() {
                 ts.centre = ts.centreFor(root.nowMs());
                 ts.now = root.nowMs();
-                followTimer.restart();
+                ts.requestFollow(true);
             }
             function onHaveSyncedChanged() { ts.now = root.nowMs(); }
         }
@@ -1249,10 +1293,20 @@ PlasmoidItem {
             delegate: LyricRow {
                 view: ts
             }
-            onContentYChanged: {
-                if (!ts.programmatic && !scrollAnim.running) ts.browse();
-            }
+            onCountChanged: ts.requestFollow(false)
+            // Only real user interaction stops the follow; implicit contentY
+            // adjustments from delegate relayouts must not (DMS watches
+            // isUserScrolling || dragging for the same reason).
             onDraggingChanged: if (lv.dragging) ts.browse()
+            onWheel: function (wheel) {
+                ts.browse();
+                wheel.accepted = false;   // let the view scroll natively
+            }
+        }
+
+        TextMetrics {
+            id: measure
+            font.family: root.cfgFont
         }
     }
 
@@ -1659,7 +1713,7 @@ PlasmoidItem {
                         anchors.fill: parent
                         function resumeFollow() {
                             following = true;
-                            followTimer.restart();
+                            requestFollow(true);
                         }
                     }
 

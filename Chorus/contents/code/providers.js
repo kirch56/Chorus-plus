@@ -43,13 +43,45 @@ function parseTTMLTime(str) {
     return Math.round(sec * 1000);
 }
 
+// Apple Music style TTML nests echo / background-vocal groups in wrapper
+// spans that carry no timing of their own (<span ttm:role="x-bg"><span
+// begin="..">(My</span>...). A flat per-word scan eats the wrapper's first
+// child and drops the whole group, so every wrapper without begin=/end= is
+// unwrapped first and only the timed leaves stay.
+function flattenTtmlSpans(s) {
+    var toks = [], re = /<\/?span\b[^>]*>/g, m, last = 0;
+    while ((m = re.exec(s)) !== null) {
+        if (m.index > last)
+            toks.push({ t: "x", s: s.slice(last, m.index) });
+        toks.push({ t: m[0].charAt(1) === "/" ? "c" : "o", s: m[0],
+                    timed: /\b(?:begin|end)\s*=/.test(m[0]) });
+        last = re.lastIndex;
+    }
+    if (last < s.length)
+        toks.push({ t: "x", s: s.slice(last) });
+    var out = "", stack = [];
+    for (var i = 0; i < toks.length; i++) {
+        var tk = toks[i];
+        if (tk.t === "o") {
+            stack.push(tk.timed);
+            if (tk.timed) out += tk.s;
+        } else if (tk.t === "c") {
+            if (stack.pop()) out += tk.s;
+        } else {
+            out += tk.s;
+        }
+    }
+    return out;
+}
+
 // Word-level spans inside a TTML <p>: <span begin=".." end="..">word</span>.
 // Whitespace between spans carries the spaces between words, so it is kept
 // (appended to the preceding word) and the rendered line matches the source.
 function parseTTMLWords(inner) {
+    var flat = flattenTtmlSpans(String(inner));
     var re = /<span\b([^>]*)>([\s\S]*?)<\/span>([\s\S]*?)(?=<span\b|$)/g;
     var words = [], m;
-    while ((m = re.exec(inner)) !== null) {
+    while ((m = re.exec(flat)) !== null) {
         var bt = /\bbegin\s*=\s*["']([^"']+)["']/.exec(m[1]);
         var et = /\bend\s*=\s*["']([^"']+)["']/.exec(m[1]);
         var t = bt ? parseTTMLTime(bt[1]) : -1;
@@ -60,6 +92,12 @@ function parseTTMLWords(inner) {
         if (gap !== "" && !/\S/.test(gap)) text += gap;
         words.push({ t: t, e: e > t ? e : 0, text: text });
     }
+    // Echo groups like "(My conscience)" are glued to the previous word in
+    // the source TTML (no whitespace before the group's span); the lyric
+    // text always spaces them off.
+    for (var i = 1; i < words.length; i++)
+        if (/^[(（]/.test(words[i].text) && !/\s$/.test(words[i - 1].text))
+            words[i - 1].text += " ";
     return words.length >= 2 ? words : null;
 }
 
@@ -77,7 +115,10 @@ function ttmlToSong(ttml) {
         var endM = /\bend\s*=\s*["']([^"']+)["']/.exec(open);
         var e = endM ? parseTTMLTime(endM[1]) : 0;
         var words = parseTTMLWords(m[2]);
-        var text = m[2].replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+        // Same echo spacing as parseTTMLWords applies to the words: glued
+        // "(Echo)" groups are spaced off the main vocal in the rendered text.
+        var text = m[2].replace(/<[^>]*>/g, "").replace(/([^\s(（])\(/g, "$1 (")
+                   .replace(/\s+/g, " ").trim();
         if (t < 0 || text === "") continue;
         out.push({ t: t, e: e > t ? e : 0, text: text, words: words });
     }

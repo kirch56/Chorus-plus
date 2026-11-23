@@ -158,6 +158,15 @@ function finalizeLines(lines) {
                     ws.push({ t: w.t, e: w.e || 0, text: String(w.text) });
             }
             // words must cover the line and have real times to sweep
+            if (ws.length >= 2 && ln.text) {
+                // Safety net: the fragments must reproduce the line text.
+                // When a provider loses words (dropped punctuation, mangled
+                // echo groups) fall back to line-level rendering so the
+                // visible text is never wrong.
+                var jt = joinWords(ws).replace(/\s+/g, "");
+                var lt = normalize(String(ln.text)).replace(/\s+/g, "");
+                if (jt !== lt) ws = [];
+            }
             ln.words = ws.length >= 2 ? ws : null;
         }
         clean.push(ln);
