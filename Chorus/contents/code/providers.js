@@ -753,7 +753,7 @@ function liriQoToSong(body, ctx) {
             words: words
         });
     }
-    var song = providerSong(lines, "LiriQo", ctx);
+    var song = providerSong(lines, "LiriQo", ctx, 0, providerTrackInfo(root));
     if (song && root.provider) ctx.log("lyrics: LiriQo upstream " + root.provider);
     return song;
 }
@@ -801,7 +801,8 @@ function lrcmuxToSong(body, ctx) {
         });
     }
     var song = providerSong(lines, "LRCMux", ctx,
-            body.track && typeof body.track.duration === "number" ? body.track.duration : 0);
+            body.track && typeof body.track.duration === "number" ? body.track.duration : 0,
+            providerTrackInfo(body));
     if (song && body.meta && body.meta.source && body.meta.source.name)
         ctx.log("lyrics: LRCMux upstream " + body.meta.source.name);
     return song;
@@ -851,7 +852,7 @@ function lyricaToSong(body, ctx) {
             words: words
         });
     }
-    var song = providerSong(lines, "Lyrica", ctx);
+    var song = providerSong(lines, "Lyrica", ctx, 0, providerTrackInfo(data));
     if (song && data.source) ctx.log("lyrics: Lyrica upstream " + data.source);
     return song;
 }
@@ -891,7 +892,10 @@ function fetchSyncLRC(ctx, cb) {
         var song = lrc ? lrcTextToSong(lrc) : null;
         if (song) {
             song.providerName = "SyncLRC";
-            song.durMs = providerDurationMs(ctx);
+            var syncInfo = providerTrackInfo(body);
+            song.durMs = syncInfo.duration > 0 ? Math.round(syncInfo.duration * 1000) : 0;
+            if (syncInfo.title) song.matchTitle = syncInfo.title;
+            if (syncInfo.artist) song.matchArtist = syncInfo.artist;
             if (body.type && body.type !== "karaoke")
                 ctx.log("lyrics: SyncLRC returned " + body.type + " fallback");
         }
@@ -942,7 +946,7 @@ function syncLyricsToSong(body, ctx) {
         if (text !== "")
             lines.push({ t: lineStart, e: lineEnd, text: text, words: words.length >= 2 ? words : null });
     }
-    return providerSong(lines, "SyncLyrics API", ctx);
+    return providerSong(lines, "SyncLyrics API", ctx, 0, providerTrackInfo(body));
 }
 
 function fetchSyncLyrics(ctx, cb) {
@@ -971,7 +975,10 @@ function fetchKaralyr(ctx, cb) {
                 ? lrcTextToSong(body.syncedLyrics) : null;
         if (song) {
             song.providerName = "Karalyr";
-            song.durMs = providerDurationMs(ctx);
+            var karaInfo = providerTrackInfo(body);
+            song.durMs = karaInfo.duration > 0 ? Math.round(karaInfo.duration * 1000) : 0;
+            if (karaInfo.title) song.matchTitle = karaInfo.title;
+            if (karaInfo.artist) song.matchArtist = karaInfo.artist;
             if (body.karalyr && body.karalyr.source)
                 ctx.log("lyrics: Karalyr revision from " + body.karalyr.source);
         }
@@ -1031,7 +1038,9 @@ function fetchLrcRed(ctx, cb) {
                 if (song) {
                     song.providerName = "lrc.red";
                     song.durMs = typeof track.duration === "number"
-                            ? Math.round(track.duration * 1000) : providerDurationMs(ctx);
+                            ? Math.round(track.duration * 1000) : 0;
+                    song.matchTitle = hit.title || "";
+                    song.matchArtist = hit.artist || "";
                     ctx.log("lyrics: lrc.red source credited (https://lrc.red)");
                 }
                 cb(song);
@@ -1060,7 +1069,11 @@ function fetchAmll(ctx, cb) {
             var song = data && typeof data.lyrics === "string" ? ttmlToSong(data.lyrics) : null;
             if (song) {
                 song.providerName = "AMLL TTML DB";
-                song.durMs = providerDurationMs(ctx);
+                var amllInfo = providerTrackInfo(data);
+                song.durMs = amllInfo.duration > 0 ? Math.round(amllInfo.duration * 1000) : 0;
+                if (amllInfo.title) song.matchTitle = amllInfo.title;
+                else if (data.musicNames && data.musicNames.length) song.matchTitle = data.musicNames[0];
+                if (amllInfo.artist) song.matchArtist = amllInfo.artist;
                 if (data.musicNames && data.musicNames.length)
                     ctx.log("lyrics: AMLL TTML DB matched " + data.musicNames[0]);
             }
@@ -1081,7 +1094,10 @@ function fetchLyricsDB(ctx, cb) {
         var song = ok ? ttmlToSong(unwrapTtml(resp)) : null;
         if (song) {
             song.providerName = "LyricsDB";
-            song.durMs = providerDurationMs(ctx);
+            var dbInfo = providerTrackInfo(safeJson(resp));
+            song.durMs = dbInfo.duration > 0 ? Math.round(dbInfo.duration * 1000) : 0;
+            if (dbInfo.title) song.matchTitle = dbInfo.title;
+            if (dbInfo.artist) song.matchArtist = dbInfo.artist;
         }
         cb(song);
     });
