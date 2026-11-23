@@ -1145,6 +1145,59 @@ function dmsSearchable(text) {
         .replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
 }
 
+// Unlike dmsSearchable (used to compare lyric lines), title identity must keep
+// edition suffixes. Removing "(A-Trak Remix)" here silently merges the remix
+// with the original recording.
+function dmsTitleKey(text) {
+    return String(text || "").toLowerCase()
+        .replace(/[()[\]{}（）【】]/g, " ")
+        .replace(/[\u2000-\u206F\u2100-\u214F\u2190-\u2BFF\u2E00-\u2E7F\u3000-\u303F\uFE10-\uFE6F\uFF01-\uFF20\uFF3B-\uFF40\uFF5B-\uFF65]+/g, " ")
+        .replace(/[^0-9A-Za-z\u00C0-\u00FF\u0100-\u04FF\u0590-\u08FF\u0900-\u9FFF\uA000-\uFFDC]+/g, " ")
+        .replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
+}
+
+function dmsTitlesEquivalent(a, b) {
+    var aa = dmsTitleKey(a).split(" ");
+    var bb = dmsTitleKey(b).split(" ");
+    if (aa.length === 1 && aa[0] === "") return false;
+    if (aa.length !== bb.length) return false;
+    for (var i = 0; i < aa.length; i++) {
+        if (aa[i] === bb[i]) continue;
+        // Streaming catalogues occasionally pluralize a title word.
+        if (aa[i].length > 3 && bb[i].length > 3
+                && (aa[i] + "s" === bb[i] || bb[i] + "s" === aa[i])) continue;
+        return false;
+    }
+    return true;
+}
+
+function dmsHasVersionTag(title) {
+    return /\b(?:remix(?:ed)?|radio|edit|dub|club|extended|instrumental|live|acoustic|remaster(?:ed)?|mix|version|demo|sped\s*up|slowed|nightcore)\b/i.test(String(title || ""));
+}
+
+function dmsArtistCompatible(want, got) {
+    var a = dmsTitleKey(want), b = dmsTitleKey(got);
+    return a !== "" && b !== "" && (a === b || a.indexOf(b) !== -1 || b.indexOf(a) !== -1);
+}
+
+// A versioned request must be backed by the same version title or by a
+// catalogue duration that genuinely matches the playing file. Providers must
+// never claim the player's duration when their own response omits it.
+function dmsMetadataProblem(ctx, song) {
+    if (!song) return "missing";
+    var durationVerified = ctx.durS > 0 && song.durMs > 0
+            && dmsProblemWith(ctx, song) === "";
+    if (song.durMs > 0 && !durationVerified) return "duration mismatch";
+    if (song.matchArtist && ctx.artist
+            && !dmsArtistCompatible(ctx.artist, song.matchArtist)) return "artist mismatch";
+    if (song.matchTitle && ctx.title && !dmsTitlesEquivalent(ctx.title, song.matchTitle)
+            && !durationVerified) return "track/version mismatch";
+    if (dmsHasVersionTag(ctx.title) && !song.matchTitle && !durationVerified)
+        return "version not verified";
+    return "";
+}
+
+
 function dmsTimedCues(song) {
     if (!song || !song.lines) return [];
     var out = [];
@@ -1215,6 +1268,12 @@ function dmsPick(ctx, results) {
     for (var i = 0; i < results.length; i++) {
         var song = results[i];
         if (!song || !song.lines || song.lines.length === 0) continue;
+        var metadataProblem = dmsMetadataProblem(ctx, song);
+        if (metadataProblem !== "") {
+            ctx.log("lyrics: rejected " + (song.providerName || "provider")
+                    + " (" + metadataProblem + ")");
+            continue;
+        }
         var cues = dmsTimedCues(song);
         candidates.push({
             priority: i,
@@ -1344,8 +1403,9 @@ function fetchAll(ctx, cb) {
             ctx.log("lyrics: late " + name + " answer dropped (word-level already active)");
             return;
         }
-        if (dmsProblemWith(ctx, song) !== "") {
-            ctx.log("lyrics: late " + name + " answer rejected (timed for another cut)");
+        var metadataProblem = dmsMetadataProblem(ctx, song);
+        if (metadataProblem !== "") {
+            ctx.log("lyrics: late " + name + " answer rejected (" + metadataProblem + ")");
             return;
         }
         if (winner && song.wordSync !== true) {
