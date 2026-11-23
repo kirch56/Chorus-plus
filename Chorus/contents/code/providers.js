@@ -110,13 +110,16 @@ function ttmlNeedsWordSpace(previous, next) {
         && (/[A-Za-z0-9]/.test(left) || /[,.;:!?…)\]]/.test(left));
 }
 
+function ttmlSpaceWordTokens(words) {
+    for (var i = 1; i < words.length; i++)
+        if (ttmlNeedsWordSpace(words[i - 1].text, words[i].text))
+            words[i - 1].text += " ";
+}
+
 function ttmlJoinWordText(words) {
     var out = "";
-    for (var i = 0; i < words.length; i++) {
-        var part = String(words[i].text || "");
-        if (ttmlNeedsWordSpace(out, part)) out += " ";
-        out += part;
-    }
+    for (var i = 0; i < words.length; i++)
+        out += String(words[i].text || "");
     return out.replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
 }
 
@@ -141,6 +144,7 @@ function parseTTMLWords(inner) {
     for (var i = 1; i < words.length; i++)
         if (/^[(（]/.test(words[i].text) && !/\s$/.test(words[i - 1].text))
             words[i - 1].text += " ";
+    ttmlSpaceWordTokens(words);
     return words.length >= 2 ? words : null;
 }
 
