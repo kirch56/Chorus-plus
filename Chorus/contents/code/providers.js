@@ -620,7 +620,420 @@ function fetchLrclib(ctx, cb) {
     });
 }
 
+// ---------- additional word-level providers ----------
+
+// The providers below intentionally share the widget's existing normalization
+// model. All times in this file are milliseconds unless noted otherwise.
+
+function providerDurationMs(ctx) {
+    return ctx.durS > 0 ? Math.round(ctx.durS * 1000) : 0;
+}
+
+function providerSong(lines, name, ctx, durationSeconds) {
+    if (!lines || lines.length === 0) return null;
+    var song = Lrc.finalizeLines(lines);
+    if (!song || !song.lines || song.lines.length === 0) return null;
+    song.providerName = name;
+    var duration = typeof durationSeconds === "number" && durationSeconds > 0
+            ? durationSeconds : (ctx.durS > 0 ? ctx.durS : 0);
+    song.durMs = duration > 0 ? Math.round(duration * 1000) : 0;
+    return song;
+}
+
+function safeJson(resp) {
+    try { return JSON.parse(resp); } catch (e) { return null; }
+}
+
+// LiriQo: normalized multi-provider response; native word timestamps are ms.
+// GET /v1/lyrics?title=&artist=&duration=
+function liriQoToSong(body, ctx) {
+    if (!body) return null;
+    var root = body.primary || (body.data && body.data.primary) || null;
+    if (!root || !root.timed || !root.timed.length) return null;
+    var lines = [];
+    for (var i = 0; i < root.timed.length; i++) {
+        var ln = root.timed[i];
+        if (!ln || typeof ln.start !== "number") continue;
+        var text = typeof ln.text === "string" ? ln.text : "";
+        if (text === "") continue;
+        var rawWords = ln.words || (root.words && ln.id !== undefined ? root.words[ln.id] : null);
+        var words = null;
+        if (rawWords && rawWords.length) {
+            words = [];
+            for (var j = 0; j < rawWords.length; j++) {
+                var w = rawWords[j];
+                if (!w || typeof w.start !== "number" || typeof w.text !== "string" || w.text === "")
+                    continue;
+                words.push({
+                    t: w.start,
+                    e: typeof w.end === "number" ? w.end : 0,
+                    text: w.text
+                });
+            }
+            if (words.length < 2) words = null;
+        }
+        lines.push({
+            t: ln.start,
+            e: typeof ln.end === "number" ? ln.end : 0,
+            text: text,
+            words: words
+        });
+    }
+    var song = providerSong(lines, "LiriQo", ctx);
+    if (song && root.provider) ctx.log("lyrics: LiriQo upstream " + root.provider);
+    return song;
+}
+
+function fetchLiriQo(ctx, cb) {
+    var url = "https://api.liriqo-alfarrizi.my.id/v1/lyrics?title="
+            + encodeURIComponent(ctx.title)
+            + "&artist=" + encodeURIComponent(ctx.artist);
+    if (ctx.album) url += "&album=" + encodeURIComponent(ctx.album);
+    if (ctx.durS > 0) url += "&duration=" + ctx.durS;
+    ctx.httpGet(url, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var body = ok && resp ? safeJson(resp) : null;
+        cb(body ? liriQoToSong(body, ctx) : null);
+    });
+}
+
+// LRCMux: direct JSON output, start/end and words are integer milliseconds.
+// GET /get?artist=&title=&level=word&format=json
+function lrcmuxToSong(body, ctx) {
+    if (!body || !body.lines || !body.lines.length) return null;
+    var lines = [];
+    for (var i = 0; i < body.lines.length; i++) {
+        var ln = body.lines[i];
+        if (!ln || typeof ln.start !== "number") continue;
+        var words = null;
+        if (ln.words && ln.words.length) {
+            words = [];
+            for (var j = 0; j < ln.words.length; j++) {
+                var w = ln.words[j];
+                if (!w || typeof w.start !== "number" || typeof w.text !== "string") continue;
+                words.push({
+                    t: w.start,
+                    e: typeof w.end === "number" ? w.end : 0,
+                    text: w.text
+                });
+            }
+            if (words.length < 2) words = null;
+        }
+        lines.push({
+            t: ln.start,
+            e: typeof ln.end === "number" ? ln.end : 0,
+            text: typeof ln.text === "string" ? ln.text : "",
+            words: words
+        });
+    }
+    var song = providerSong(lines, "LRCMux", ctx,
+            body.track && typeof body.track.duration === "number" ? body.track.duration : 0);
+    if (song && body.meta && body.meta.source && body.meta.source.name)
+        ctx.log("lyrics: LRCMux upstream " + body.meta.source.name);
+    return song;
+}
+
+function fetchLrcmux(ctx, cb) {
+    var url = "https://api.lrcmux.dev/get?artist=" + encodeURIComponent(ctx.artist)
+            + "&title=" + encodeURIComponent(ctx.title)
+            + "&level=word&format=json";
+    if (ctx.album) url += "&album=" + encodeURIComponent(ctx.album);
+    if (ctx.durS > 0) url += "&duration=" + ctx.durS;
+    ctx.httpGet(url, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var body = ok && resp ? safeJson(resp) : null;
+        cb(body ? lrcmuxToSong(body, ctx) : null);
+    });
+}
+
+// Lyrica: word=true returns timed_lyrics with word start/end in ms.
+function lyricaToSong(body, ctx) {
+    var data = body && (body.data || body);
+    if (!data || !data.timed_lyrics || !data.timed_lyrics.length) return null;
+    var lines = [];
+    for (var i = 0; i < data.timed_lyrics.length; i++) {
+        var ln = data.timed_lyrics[i];
+        if (!ln || typeof ln.start_time !== "number") continue;
+        var words = null;
+        if (ln.words && ln.words.length) {
+            words = [];
+            for (var j = 0; j < ln.words.length; j++) {
+                var w = ln.words[j];
+                var wordText = typeof w.word === "string" ? w.word : w.text;
+                if (!w || typeof w.start !== "number" || typeof wordText !== "string" || wordText === "")
+                    continue;
+                words.push({
+                    t: w.start,
+                    e: typeof w.end === "number" ? w.end : 0,
+                    text: wordText
+                });
+            }
+            if (words.length < 2) words = null;
+        }
+        lines.push({
+            t: ln.start_time,
+            e: typeof ln.end_time === "number" ? ln.end_time : 0,
+            text: typeof ln.text === "string" ? ln.text : "",
+            words: words
+        });
+    }
+    var song = providerSong(lines, "Lyrica", ctx);
+    if (song && data.source) ctx.log("lyrics: Lyrica upstream " + data.source);
+    return song;
+}
+
+function fetchLyrica(ctx, cb) {
+    var url = "https://wilooper-lyrica.hf.space/lyrics/?artist="
+            + encodeURIComponent(ctx.artist) + "&song=" + encodeURIComponent(ctx.title)
+            + "&timestamps=true&word=true";
+    if (ctx.album) url += "&album=" + encodeURIComponent(ctx.album);
+    if (ctx.durS > 0) url += "&duration=" + ctx.durS;
+    ctx.httpGet(url, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var body = ok && resp ? safeJson(resp) : null;
+        cb(body ? lyricaToSong(body, ctx) : null);
+    });
+}
+
+// SyncLRC: request karaoke TTML, then fall back to Enhanced LRC in its JSON
+// response if the server cannot produce TTML for a particular track.
+function fetchSyncLRC(ctx, cb) {
+    var url = "https://api.synclrc.dev/lyrics?track=" + encodeURIComponent(ctx.title)
+            + "&artist=" + encodeURIComponent(ctx.artist)
+            + "&type=karaoke&format=ttml";
+    if (ctx.album) url += "&album=" + encodeURIComponent(ctx.album);
+    if (ctx.durS > 0) url += "&duration=" + ctx.durS;
+    ctx.httpGet(url, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var ttml = ok ? unwrapTtml(resp) : null;
+        var song = ttml ? ttmlToSong(ttml) : null;
+        if (song) {
+            song.providerName = "SyncLRC";
+            song.durMs = providerDurationMs(ctx);
+            cb(song);
+            return;
+        }
+        var body = ok && resp ? safeJson(resp) : null;
+        var lrc = body && (body.karaoke || body.lyrics);
+        song = typeof lrc === "string" ? lrcTextToSong(lrc) : null;
+        if (song) {
+            song.providerName = "SyncLRC";
+            song.durMs = providerDurationMs(ctx);
+        }
+        cb(song);
+    });
+}
+
+// SyncLyrics API exposes Musixmatch/NetEase word timing as per-token offsets
+// in seconds relative to each line's absolute start timestamp.
+function syncLyricsToSong(body, ctx) {
+    var data = body && body.lyrics && body.lyrics.wordSynced;
+    var rows = data && data.lyrics;
+    if (!rows || !rows.length) return null;
+    var lines = [];
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        if (!row || typeof row.start !== "number") continue;
+        var lineStart = Math.round(row.start * 1000);
+        var lineEnd = typeof row.end === "number" ? Math.round(row.end * 1000) : 0;
+        var words = [];
+        var current = null;
+        var tokens = row.syncedLyric || [];
+        for (var j = 0; j < tokens.length; j++) {
+            var token = tokens[j];
+            if (!token || typeof token.character !== "string" || typeof token.time !== "number")
+                continue;
+            var tokenText = token.character;
+            var at = lineStart + Math.round(token.time * 1000);
+            if (/^\s+$/.test(tokenText)) {
+                if (current) {
+                    current.text += tokenText;
+                    current.e = at > current.t ? at : 0;
+                    words.push(current);
+                    current = null;
+                }
+            } else if (current) {
+                // Adjacent non-space chunks belong to the same token.
+                current.text += tokenText;
+            } else {
+                current = { t: at, e: 0, text: tokenText };
+            }
+        }
+        if (current) {
+            current.e = lineEnd > current.t ? lineEnd : 0;
+            words.push(current);
+        }
+        var text = typeof row.lyric === "string" ? row.lyric : "";
+        if (text !== "")
+            lines.push({ t: lineStart, e: lineEnd, text: text, words: words.length >= 2 ? words : null });
+    }
+    return providerSong(lines, "SyncLyrics API", ctx);
+}
+
+function fetchSyncLyrics(ctx, cb) {
+    var url = "https://lyrics-api.stefdp.lol/lyrics?artist=" + encodeURIComponent(ctx.artist)
+            + "&track=" + encodeURIComponent(ctx.title);
+    if (ctx.album) url += "&album=" + encodeURIComponent(ctx.album);
+    if (ctx.durS > 0) url += "&length=" + Math.round(ctx.durS * 1000);
+    ctx.httpGet(url, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var body = ok && resp ? safeJson(resp) : null;
+        cb(body ? syncLyricsToSong(body, ctx) : null);
+    });
+}
+
+// Karalyr is LRCLIB-compatible and returns Enhanced LRC only when a word-timed
+// recording exists. Its current public catalogue is intentionally small.
+function fetchKaralyr(ctx, cb) {
+    var url = "https://karalyr.com/api/get?artist_name=" + encodeURIComponent(ctx.artist)
+            + "&track_name=" + encodeURIComponent(ctx.title);
+    if (ctx.album) url += "&album_name=" + encodeURIComponent(ctx.album);
+    if (ctx.durS > 0) url += "&duration=" + ctx.durS;
+    ctx.httpGet(url, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var body = ok && resp ? safeJson(resp) : null;
+        var song = body && typeof body.syncedLyrics === "string"
+                ? lrcTextToSong(body.syncedLyrics) : null;
+        if (song) {
+            song.providerName = "Karalyr";
+            song.durMs = providerDurationMs(ctx);
+            if (body.karalyr && body.karalyr.source)
+                ctx.log("lyrics: Karalyr revision from " + body.karalyr.source);
+        }
+        cb(song);
+    });
+}
+
+// lrc.red: identify the client, select the closest ISRC result, then fetch its
+// word-synced TTML. Their API requires source attribution in the UI.
+var LRC_RED_HEADERS = {
+    "X-Client-ID": "Chorus-plus (https://github.com/kirch56/Chorus-plus; contact: https://github.com/kirch56/Chorus-plus/issues)"
+};
+
+function lrcRedChooseHit(hits, ctx) {
+    if (!hits || !hits.length) return null;
+    var wantTitle = dmsSearchable(ctx.title);
+    var wantArtist = dmsSearchable(ctx.artist);
+    var best = null, bestScore = -1;
+    for (var i = 0; i < hits.length; i++) {
+        var h = hits[i];
+        if (!h || !h.isrc) continue;
+        var title = dmsSearchable(h.title);
+        var artist = dmsSearchable(h.artist);
+        var score = 0;
+        if (title === wantTitle) score += 4;
+        else if (title.indexOf(wantTitle) !== -1 || wantTitle.indexOf(title) !== -1) score += 2;
+        if (artist === wantArtist) score += 3;
+        else if (artist.indexOf(wantArtist) !== -1 || wantArtist.indexOf(artist) !== -1) score += 1;
+        if (ctx.durS > 0 && typeof h.duration === "number") {
+            var gap = Math.abs(h.duration - ctx.durS);
+            if (gap <= 3) score += 2;
+            else if (gap <= 10) score += 1;
+            else score -= 4;
+        }
+        if (score > bestScore) { best = h; bestScore = score; }
+    }
+    return bestScore > 0 ? best : null;
+}
+
+function fetchLrcRed(ctx, cb) {
+    var q = encodeURIComponent(ctx.title + " " + ctx.artist);
+    ctx.httpGet("https://lrc.red/search.json?q=" + q, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var search = ok && resp ? safeJson(resp) : null;
+        var hit = lrcRedChooseHit(search && search.hits, ctx);
+        if (!hit) { cb(null); return; }
+        var trackUrl = "https://lrc.red/s/" + encodeURIComponent(hit.isrc) + ".json";
+        ctx.httpGet(trackUrl, function (ok2, resp2) {
+            if (ctx.isStale()) return;
+            var track = ok2 && resp2 ? safeJson(resp2) : null;
+            if (!track || track.sync !== "word") { cb(null); return; }
+            var ttmlUrl = track.files && track.files.ttml
+                    ? track.files.ttml : "https://lrc.red/s/" + encodeURIComponent(hit.isrc) + ".ttml";
+            ctx.httpGet(ttmlUrl, function (ok3, resp3) {
+                if (ctx.isStale()) return;
+                var song = ok3 ? ttmlToSong(unwrapTtml(resp3)) : null;
+                if (song) {
+                    song.providerName = "lrc.red";
+                    song.durMs = typeof track.duration === "number"
+                            ? Math.round(track.duration * 1000) : providerDurationMs(ctx);
+                    ctx.log("lyrics: lrc.red source credited (https://lrc.red)");
+                }
+                cb(song);
+            }, LRC_RED_HEADERS);
+        }, LRC_RED_HEADERS);
+    }, LRC_RED_HEADERS);
+}
+
+// AMLL TTML DB: search the community database by metadata, then fetch the
+// selected immutable TTML record by its numeric ID.
+function fetchAmll(ctx, cb) {
+    var url = "https://api.amll.dev/v1/lyrics/search?musicName=" + encodeURIComponent(ctx.title)
+            + "&artistName=" + encodeURIComponent(ctx.artist) + "&pageSize=10";
+    if (ctx.album) url += "&albumName=" + encodeURIComponent(ctx.album);
+    ctx.httpGet(url, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var search = ok && resp ? safeJson(resp) : null;
+        var items = search && search.data && search.data.items;
+        if (!items || !items.length || !items[0].id) { cb(null); return; }
+        // AMLL sorts matches by relevance; the first result is the best match.
+        var getUrl = "https://api.amll.dev/v1/lyrics/get?id=" + encodeURIComponent(items[0].id);
+        ctx.httpGet(getUrl, function (ok2, resp2) {
+            if (ctx.isStale()) return;
+            var body = ok2 && resp2 ? safeJson(resp2) : null;
+            var data = body && body.data;
+            var song = data && typeof data.lyrics === "string" ? ttmlToSong(data.lyrics) : null;
+            if (song) {
+                song.providerName = "AMLL TTML DB";
+                song.durMs = providerDurationMs(ctx);
+                if (data.musicNames && data.musicNames.length)
+                    ctx.log("lyrics: AMLL TTML DB matched " + data.musicNames[0]);
+            }
+            cb(song);
+        });
+    });
+}
+
+// LyricsDB has a public, no-key fuzzy lookup and returns TTML (word/syllable
+// timing) directly. New uncached tracks are subject to its 6/minute fair-use cap.
+function fetchLyricsDB(ctx, cb) {
+    var url = "https://lyricsdb.kollod.dev/api/lyrics/fuzzy?title=" + encodeURIComponent(ctx.title)
+            + "&artist=" + encodeURIComponent(ctx.artist) + "&format=ttml";
+    if (ctx.album) url += "&album=" + encodeURIComponent(ctx.album);
+    if (ctx.durS > 0) url += "&duration=" + ctx.durS;
+    ctx.httpGet(url, function (ok, resp) {
+        if (ctx.isStale()) return;
+        var song = ok ? ttmlToSong(unwrapTtml(resp)) : null;
+        if (song) {
+            song.providerName = "LyricsDB";
+            song.durMs = providerDurationMs(ctx);
+        }
+        cb(song);
+    });
+}
+
 // ---------- registry ----------
+
+// wordSync marks providers that can return word/syllable-level timing. Some
+// providers can still fall back to line-level results, but remain in the
+// word-capable race so a later karaoke answer can upgrade the result.
+var PROVIDERS = [
+    { id: "betterlyrics", name: "Better Lyrics", wordSync: true, fetch: fetchBetterLyrics },
+    { id: "unison", name: "Unison", wordSync: true, fetch: fetchUnison },
+    { id: "lyricsplus", name: "LyricsPlus", wordSync: true, fetch: fetchLyricsPlus },
+    { id: "lrcmux", name: "LRCMux", wordSync: true, fetch: fetchLrcmux },
+    { id: "liriqo", name: "LiriQo", wordSync: true, fetch: fetchLiriQo },
+    { id: "lyrica", name: "Lyrica", wordSync: true, fetch: fetchLyrica },
+    { id: "synclrc", name: "SyncLRC", wordSync: true, fetch: fetchSyncLRC },
+    { id: "synclyrics", name: "SyncLyrics API", wordSync: true, fetch: fetchSyncLyrics },
+    { id: "amll", name: "AMLL TTML DB", wordSync: true, fetch: fetchAmll },
+    { id: "lrc-red", name: "lrc.red", wordSync: true, fetch: fetchLrcRed },
+    { id: "lyricsdb", name: "LyricsDB", wordSync: true, fetch: fetchLyricsDB },
+    { id: "karalyr", name: "Karalyr", wordSync: true, fetch: fetchKaralyr },
+    { id: "kugou", name: "KuGou", wordSync: false, fetch: fetchKugou },
+    { id: "lrclib", name: "LRCLIB", wordSync: true, fetch: fetchLrclib },
+    { id: "youtube", name: "YouTube Music", wordSync: false, fetch: fetchYoutubeMusic }
+];
 
 // wordSync marks providers that can return word/syllable-level timings:
 // Better Lyrics and Unison serve Apple Music TTML, LyricsPlus aggregates
