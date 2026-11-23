@@ -1464,6 +1464,7 @@ PlasmoidItem {
             anchors.right: parent.right
             anchors.bottom: attrLabel.top
             clip: true
+            interactive: true
             reuseItems: true
             cacheBuffer: Math.max(0, Math.round(ts.height))
             spacing: Kirigami.Units.smallSpacing
@@ -1485,7 +1486,7 @@ PlasmoidItem {
                 // Handle wheel input explicitly. This is more reliable than
                 // hoping the event propagates through the delegate to Flickable.
                 target: null
-                blocking: false
+                blocking: true
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 onWheel: function (event) {
                     var delta = event.pixelDelta.y !== 0
