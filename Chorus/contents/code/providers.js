@@ -182,6 +182,9 @@ function ttmlToSong(ttml, preserveSourceSpacing) {
         var open = m[0].slice(0, m[0].indexOf(">"));
         if (ttmlIsTranslationRole(open)) continue;
         var paragraphBackground = ttmlIsBackgroundRole(open);
+        // Older TTML payloads used a literal {bg} marker instead of an x-bg
+        // role. Keep ignoring those synthetic rows, but preserve real x-bg.
+        if (/\{bg\}/i.test(m[2]) && !ttmlIsBackgroundRole(m[2])) continue;
         var t = parseTTMLTime(m[1]);
         var endM = /\bend\s*=\s*["']([^"']+)["']/.exec(open);
         var e = endM ? parseTTMLTime(endM[1]) : 0;

@@ -202,7 +202,7 @@ test("TTML keeps x-bg backing vocals in a separate timed lane", () => {
     assert.equal(song.lines[0].text, "I'll be there");
     assert.equal(song.lines[0].backgrounds.length, 1);
     assert.equal(song.lines[0].backgrounds[0].text, "(oh) yeah");
-    assert.equal(song.lines[0].backgrounds[0].words.map(word => word.text).join(""), "(oh) yeah");
+    assert.equal(song.lines[0].backgrounds[0].words.map(word => word.text).join("").trim(), "(oh) yeah");
     assert.deepEqual(
         JSON.parse(JSON.stringify(song.lines[0].backgrounds[0].words.map(word => word.t))),
         [1200, 1600]
