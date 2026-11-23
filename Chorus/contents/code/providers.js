@@ -293,6 +293,10 @@ function fetchUnison(ctx, cb) {
         else if (fmt === "ttml") song = ttmlToSong(body.data.lyrics);
         // "plain" is not synced; skip it.
         if (song) {
+            var unisonInfo = providerTrackInfo(body.data);
+            if (unisonInfo.title) song.matchTitle = unisonInfo.title;
+            if (unisonInfo.artist) song.matchArtist = unisonInfo.artist;
+            if (unisonInfo.duration > 0) song.durMs = Math.round(unisonInfo.duration * 1000);
             // Unison requires crediting the submitter of the lyrics.
             var who = "";
             try {
@@ -363,7 +367,14 @@ function fetchLyricsPlus(ctx, cb) {
                 var body;
                 try { body = JSON.parse(resp); } catch (e) {}
                 var song = lyricsPlusToSong(body);
-                if (song) { cb(song); return; }
+                if (song) {
+                    var info = providerTrackInfo(body);
+                    if (info.title) song.matchTitle = info.title;
+                    if (info.artist) song.matchArtist = info.artist;
+                    if (info.duration > 0) song.durMs = Math.round(info.duration * 1000);
+                    cb(song);
+                    return;
+                }
             }
             tryBase(i + 1);
         });
@@ -452,7 +463,14 @@ function kugouTrySongs(ctx, info, i, cb) {
         if (!cand) { kugouTrySongs(ctx, info, i + 1, cb); return; }
         kugouDownload(ctx, cand.id, cand.accesskey, function (song) {
             if (ctx.isStale()) return;
-            if (song) { cb(song); return; }
+            if (song) {
+                song.durMs = typeof info[i].duration === "number" && info[i].duration > 0
+                        ? Math.round(info[i].duration * 1000) : 0;
+                if (typeof info[i].songname === "string") song.matchTitle = info[i].songname;
+                if (typeof info[i].singername === "string") song.matchArtist = info[i].singername;
+                cb(song);
+                return;
+            }
             kugouTrySongs(ctx, info, i + 1, cb);
         });
     });
@@ -1002,17 +1020,20 @@ function lrcRedChooseHit(hits, ctx) {
         if (!h || !h.isrc) continue;
         var title = dmsSearchable(h.title);
         var artist = dmsSearchable(h.artist);
-        var score = 0;
-        if (title === wantTitle) score += 4;
-        else if (title.indexOf(wantTitle) !== -1 || wantTitle.indexOf(title) !== -1) score += 2;
+        var titleExact = dmsTitlesEquivalent(ctx.title, h.title);
+        var durationMatch = ctx.durS > 0 && typeof h.duration === "number"
+                && Math.abs(h.duration - ctx.durS) <= Math.max(3, ctx.durS * 0.01);
+        // Do not collapse "(A-Trak Remix)" into the original title during
+        // catalogue search. A measured duration match can verify an alias
+        // whose provider title omits the edition suffix.
+        if (!titleExact && dmsHasVersionTag(ctx.title) && !durationMatch) continue;
+        var score = titleExact ? 8 : 0;
+        if (title === wantTitle) score += 3;
+        else if (title.indexOf(wantTitle) !== -1 || wantTitle.indexOf(title) !== -1) score += 1;
         if (artist === wantArtist) score += 3;
         else if (artist.indexOf(wantArtist) !== -1 || wantArtist.indexOf(artist) !== -1) score += 1;
-        if (ctx.durS > 0 && typeof h.duration === "number") {
-            var gap = Math.abs(h.duration - ctx.durS);
-            if (gap <= 3) score += 2;
-            else if (gap <= 10) score += 1;
-            else score -= 4;
-        }
+        if (durationMatch) score += 4;
+        else if (ctx.durS > 0 && typeof h.duration === "number") score -= 4;
         if (score > bestScore) { best = h; bestScore = score; }
     }
     return bestScore > 0 ? best : null;
