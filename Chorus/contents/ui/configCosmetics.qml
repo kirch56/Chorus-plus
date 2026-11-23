@@ -19,6 +19,8 @@ KCM.SimpleKCM {
     property alias cfg_showVolumeBar: volumeCheck.checked
     property int cfg_lyricsOffsetMs
     property var cfg_extraProviders: []
+    property alias cfg_wordSyncPriority: wordSyncCheck.checked
+    property alias cfg_wordAnimation: wordAnimCheck.checked
 
     property var fontDialog: null
     property var colorButton: null
@@ -297,6 +299,31 @@ KCM.SimpleKCM {
                 Component.onCompleted: checked = page.providerEnabled(pid)
                 onToggled: page.setProviderEnabled(pid, checked)
             }
+        }
+
+        QQC2.CheckBox {
+            id: wordSyncCheck
+            Kirigami.FormData.label: i18n("Word sync:")
+            text: i18n("Word-sync providers first")
+        }
+        QQC2.Label {
+            text: i18n("Try Better Lyrics, Unison and LyricsPlus (word-level timings) before the line-level sources. LRCLIB songs with word timings always win.")
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+        QQC2.CheckBox {
+            id: wordAnimCheck
+            Kirigami.FormData.label: i18n("Animation:")
+            text: i18n("Word-by-word karaoke sweep (Apple Music style)")
+        }
+        QQC2.Label {
+            text: i18n("Words light up one by one as they are sung in the panel and the popup.")
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
         }
     }
 

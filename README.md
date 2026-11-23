@@ -48,6 +48,7 @@ https://github.com/user-attachments/assets/aff481a7-01e9-43f6-9053-7931b17a784e
 ## Features
 
 - **Synced lyrics** from [LRCLIB](https://lrclib.net), a free and open-source lyrics library, with **five fallback providers**: Better Lyrics, Unison, LyricsPlus, KuGou and YouTube Music.
+- **Word-by-word sync**: when a source carries word timings (LRCLIB lyricsfiles, Better Lyrics / Unison TTML, LyricsPlus Musixmatch word sync), words light up one by one as they are sung — an Apple Music style karaoke sweep in the panel and the popup. Providers with word timings are tried first, and it can be turned off under **Look & Feel → Word sync / Animation**.
 - Works with **any media player**: Spotify, YouTube Music, VLC, etc.
 - Album cover, current lyric, playback controls, seek bar, shuffle/repeat, volume slider.
 - Custom font with **multiple font** support, colors, width, font scale and other **customisation** features.
@@ -75,13 +76,17 @@ kpackagetool6 -t Plasma/Applet -u chorus.plasmoid
 
 ## Lyrics
 
-Synced lyrics come from [LRCLIB](https://lrclib.net), a free and open-source lyrics library. If LRCLIB has no synced lyrics for a song, the widget tries the extra providers below, in this order — each one can be toggled in the widget settings under **Look & Feel → Lyrics providers**:
+Synced lyrics come from [LRCLIB](https://lrclib.net), a free and open-source lyrics library — including its [Lyricsfile](https://lrclib.net/lyricsfile) records, which can carry word-level timings. If LRCLIB has no synced lyrics for a song, the widget tries the extra providers below, in this order — each one can be toggled in the widget settings under **Look & Feel → Lyrics providers**:
 
-1. **Better Lyrics** — the [Better Lyrics API](https://api.betterlyrics.org)
+1. **Better Lyrics** — the [Better Lyrics API](https://api.betterlyrics.org), Apple Music TTML with per-word timings when available
 2. **Unison** — community-submitted synced lyrics at [unison.betterlyrics.org](https://unison.betterlyrics.org); the submitter is credited in the widget log
-3. **LyricsPlus** — the [LyricsPlus](https://github.com/ibratabian17/lyricsplus) aggregator (Apple Music, QQ, Musixmatch and more)
-4. **KuGou** — the [KuGou](https://www.kugou.com) lyrics library, great for CJK songs
-5. **YouTube Music** — timed captions from YouTube's InnerTube API; YouTube blocks some networks entirely, so this one may be unavailable depending on where you are
+3. **LyricsPlus** — the [LyricsPlus](https://github.com/ibratabian17/lyricsplus) aggregator (Apple Music, QQ, Musixmatch and more, including word/syllable sync)
+4. **KuGou** — the [KuGou](https://www.kugou.com) lyrics library, great for CJK songs (line-level only)
+5. **YouTube Music** — timed captions from YouTube's InnerTube API; YouTube blocks some networks entirely, so this one may be unavailable depending on where you are (line-level only)
+
+With **Word-sync providers first** enabled (default), sources that can deliver word timings are tried before line-level ones: if LRCLIB only has line-level lyrics for a song, Better Lyrics, Unison and LyricsPlus still get a chance to provide word timings before the line-level result is used. With the option off, the list above is followed in exactly the given order.
+
+The **Word-by-word karaoke sweep** animation (Apple Music style, borrowed from DMS 2.0's Dux Lyrical Engine) fills each word with the highlight color as it is sung, with a soft smoothing window so short syllables glide instead of flicking. Songs without word timings keep the classic line-by-line behavior.
 
 > [!NOTE]  
 > If lines feel early or late (e.g. Bluetooth or other latency), adjust **Lyrics timing offset** at the bottom of `Look & Feel`. Positive values show lines earlier; +500 works great for me. Sync quality can also vary from song to song; the timings are community-made, so an occasional desynced song is due to the source data, not your setup. Some songs simply have no synced lyrics on any of the sources; the widget falls back to title/artist.
