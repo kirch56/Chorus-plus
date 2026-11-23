@@ -192,6 +192,38 @@ test("lrc.red keeps source whitespace and preserves syllable-level timing", () =
     assert.equal(song.wordSync, true);
 });
 
+test("TTML keeps x-bg backing vocals in a separate timed lane", () => {
+    const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body><div>
+      <p begin="00:00:01.000" end="00:00:03.000"><span begin="00:00:01.000" end="00:00:01.500">I'll </span><span ttm:role="x-bg"><span begin="00:00:01.200" end="00:00:01.500">(oh)</span><span begin="00:00:01.600" end="00:00:01.900">yeah </span></span><span begin="00:00:01.900" end="00:00:02.300">be there</span><span ttm:role="x-translation"><span begin="00:00:02.000">中文翻译</span></span></p>
+    </div></body></tt>`;
+    const song = sandbox.ttmlToSong(ttml);
+    assert.ok(song);
+    assert.equal(song.lines.length, 1);
+    assert.equal(song.lines[0].text, "I'll be there");
+    assert.equal(song.lines[0].backgrounds.length, 1);
+    assert.equal(song.lines[0].backgrounds[0].text, "(oh) yeah");
+    assert.equal(song.lines[0].backgrounds[0].words.map(word => word.text).join(""), "(oh) yeah");
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(song.lines[0].backgrounds[0].words.map(word => word.t))),
+        [1200, 1600]
+    );
+    assert.equal(song.wordSync, true);
+});
+
+test("TTML attaches a separate x-bg paragraph to its matching lead line", () => {
+    const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body><div>
+      <p begin="00:00:01.000" end="00:00:03.000"><span begin="00:00:01.000" end="00:00:02.000">Main lyric</span></p>
+      <p begin="00:00:01.300" end="00:00:02.200" ttm:role="x-bg"><span begin="00:00:01.300" end="00:00:01.600">(ah)</span><span begin="00:00:01.700" end="00:00:02.100">oh</span></p>
+    </div></body></tt>`;
+    const song = sandbox.ttmlToSong(ttml);
+    assert.ok(song);
+    assert.equal(song.lines.length, 1);
+    assert.equal(song.lines[0].text, "Main lyric");
+    assert.equal(song.lines[0].backgrounds.length, 1);
+    assert.equal(song.lines[0].backgrounds[0].text, "(ah) oh");
+    assert.equal(song.lines[0].backgrounds[0].t, 1300);
+});
+
 test("TTML adjacent timed English words get spaces without splitting contractions", () => {
     const ttml = `<tt xmlns="http://www.w3.org/ns/ttml">
       <body><div><p begin="00:00:01.000" end="00:00:04.000">
