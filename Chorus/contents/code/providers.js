@@ -255,7 +255,14 @@ function fetchBetterLyrics(ctx, cb) {
     ctx.httpGet(url, function (ok, resp) {
         if (ctx.isStale()) return;
         var song = ok ? ttmlToSong(unwrapTtml(resp)) : null;
-        if (song) { cb(song); return; }
+        if (song) {
+            var info = providerTrackInfo(safeJson(resp));
+            if (info.title) song.matchTitle = info.title;
+            if (info.artist) song.matchArtist = info.artist;
+            if (info.duration > 0) song.durMs = Math.round(info.duration * 1000);
+            cb(song);
+            return;
+        }
         var url2 = "https://api.betterlyrics.org/kugou/getLyrics?s=" + encodeURIComponent(ctx.title)
                  + "&a=" + encodeURIComponent(ctx.artist)
                  + "&d=" + (ctx.durS > 0 ? ctx.durS : 0);
@@ -264,7 +271,15 @@ function fetchBetterLyrics(ctx, cb) {
             if (!ok2 || !resp2) { cb(null); return; }
             var body;
             try { body = JSON.parse(resp2); } catch (e) { cb(null); return; }
-            cb(body && typeof body.lyrics === "string" ? lrcTextToSong(body.lyrics) : null);
+            var fallbackSong = body && typeof body.lyrics === "string"
+                    ? lrcTextToSong(body.lyrics) : null;
+            if (fallbackSong) {
+                var info = providerTrackInfo(body);
+                if (info.title) fallbackSong.matchTitle = info.title;
+                if (info.artist) fallbackSong.matchArtist = info.artist;
+                if (info.duration > 0) fallbackSong.durMs = Math.round(info.duration * 1000);
+            }
+            cb(fallbackSong);
         });
     });
 }
@@ -710,10 +725,14 @@ function providerTrackInfo(body) {
         return 0;
     }
     var objects = [root, track, data, nested];
+    var title = typeof root.track === "string" ? root.track
+              : pickString([root, data], ["trackName", "title", "musicName", "songName"]);
+    if (!title) title = pickString([track, nested], ["trackName", "title", "name", "musicName"]);
+    var artist = pickString([root, data], ["artist", "artistName", "artist_name", "singer"]);
+    if (!artist) artist = pickString([track, nested], ["artist", "artistName", "artist_name", "singer"]);
     return {
-        title: typeof root.track === "string" ? root.track
-             : pickString(objects, ["trackName", "title", "name", "musicName", "songName"]),
-        artist: pickString(objects, ["artist", "artistName", "artist_name", "singer"]),
+        title: title,
+        artist: artist,
         duration: pickNumber(objects, ["duration", "durationSeconds", "length"])
     };
 }
@@ -1080,9 +1099,29 @@ function fetchAmll(ctx, cb) {
         if (ctx.isStale()) return;
         var search = ok && resp ? safeJson(resp) : null;
         var items = search && search.data && search.data.items;
-        if (!items || !items.length || !items[0].id) { cb(null); return; }
-        // AMLL sorts matches by relevance; the first result is the best match.
-        var getUrl = "https://api.amll.dev/v1/lyrics/get?id=" + encodeURIComponent(items[0].id);
+        if (!items || !items.length) { cb(null); return; }
+
+        var selected = null, selectedInfo = null, bestScore = -1;
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (!item || !item.id) continue;
+            var info = providerTrackInfo(item);
+            if (!info.title && typeof item.musicName === "string") info.title = item.musicName;
+            var probe = { matchTitle: info.title, matchArtist: info.artist,
+                          durMs: info.duration > 0 ? Math.round(info.duration * 1000) : 0 };
+            if (dmsMetadataProblem(ctx, probe) !== "") continue;
+            var score = (info.title ? 4 : 0) + (info.artist ? 2 : 0)
+                      + (info.duration > 0 ? 2 : 0)
+                      + (info.title && dmsTitlesEquivalent(ctx.title, info.title) ? 4 : 0);
+            if (score > bestScore) {
+                selected = item;
+                selectedInfo = info;
+                bestScore = score;
+            }
+        }
+        if (!selected) { cb(null); return; }
+
+        var getUrl = "https://api.amll.dev/v1/lyrics/get?id=" + encodeURIComponent(selected.id);
         ctx.httpGet(getUrl, function (ok2, resp2) {
             if (ctx.isStale()) return;
             var body = ok2 && resp2 ? safeJson(resp2) : null;
@@ -1091,10 +1130,11 @@ function fetchAmll(ctx, cb) {
             if (song) {
                 song.providerName = "AMLL TTML DB";
                 var amllInfo = providerTrackInfo(data);
-                song.durMs = amllInfo.duration > 0 ? Math.round(amllInfo.duration * 1000) : 0;
-                if (amllInfo.title) song.matchTitle = amllInfo.title;
-                else if (data.musicNames && data.musicNames.length) song.matchTitle = data.musicNames[0];
-                if (amllInfo.artist) song.matchArtist = amllInfo.artist;
+                song.durMs = amllInfo.duration > 0 ? Math.round(amllInfo.duration * 1000)
+                          : (selectedInfo.duration > 0 ? Math.round(selectedInfo.duration * 1000) : 0);
+                song.matchTitle = amllInfo.title || selectedInfo.title
+                        || (data.musicNames && data.musicNames.length ? data.musicNames[0] : "");
+                song.matchArtist = amllInfo.artist || selectedInfo.artist || "";
                 if (data.musicNames && data.musicNames.length)
                     ctx.log("lyrics: AMLL TTML DB matched " + data.musicNames[0]);
             }
@@ -1209,7 +1249,7 @@ function dmsTitlesEquivalent(a, b) {
 }
 
 function dmsHasVersionTag(title) {
-    return /\b(?:remix(?:ed)?|radio|edit|dub|club|extended|instrumental|live|acoustic|remaster(?:ed)?|mix|version|demo|sped\s*up|slowed|nightcore)\b/i.test(String(title || ""));
+    return /\b(?:remix(?:ed)?|radio\s+edit|radio\s+version|dub|club\s+mix|extended\s+mix|original\s+mix|dance\s+mix|edit|instrumental|live|acoustic|remaster(?:ed)?|version|demo|sped\s*up|slowed|nightcore)\b/i.test(String(title || ""));
 }
 
 function dmsArtistCompatible(want, got) {
