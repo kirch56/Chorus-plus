@@ -23,7 +23,7 @@ jobs:
       - name: Validate provider JavaScript and regression tests
         shell: bash
         run: |
-          sed -E '/^\\.(pragma|import)[[:space:]]/d' Chorus/contents/code/providers.js > /tmp/providers.js
+          sed -E '/^\.(pragma|import)[[:space:]]/d' Chorus/contents/code/providers.js > /tmp/providers.js
           node --check /tmp/providers.js
           node --test tests/providers.test.cjs
 
