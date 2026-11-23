@@ -786,9 +786,13 @@ function dmsPick(ctx, results) {
 
 // Tries every provider at once, DMS-style, and calls cb with the best answer
 // (or null). ctx.enabled (optional) restricts the race; undefined or empty
-// means all of them. The wait for the stragglers after the first match is
-// bounded by DMS_SYNC_GRACE_MS, the whole race by DMS_LOOKUP_TIMEOUT_MS.
-// ctx.later(ms, fn) schedules a one-shot callback (a QML Timer from the widget).
+// means all of them. The best answer so far is shown after DMS_SYNC_GRACE_MS,
+// but a line-level winner does not close the race: word-capable providers keep
+// racing until DMS_LOOKUP_TIMEOUT_MS and a late plausible word-level song is
+// pushed through a second cb call, so the karaoke sweep can replace plain
+// lines without a refetch (the widget re-applies and re-caches it). Word
+// providers that answered empty get one retry. ctx.later(ms, fn) schedules a
+// one-shot callback (a QML Timer from the widget).
 function fetchAll(ctx, cb) {
     var enabled = ctx.enabled;
     var chain = [];
@@ -798,17 +802,32 @@ function fetchAll(ctx, cb) {
     if (chain.length === 0) { cb(null); return; }
 
     var results = new Array(chain.length);
+    var wordIdx = [];
+    for (var w = 0; w < chain.length; w++)
+        if (chain[w].wordSync === true) wordIdx.push(w);
+
     var answered = 0, foundCount = 0, finished = false, firstFoundAt = 0;
-    var graceSet = false;
+    var graceSet = false, closed = false, winner = null, retried = false;
+
+    function pendingWordNames() {
+        var names = [];
+        for (var i = 0; i < wordIdx.length; i++)
+            if (results[wordIdx[i]] === undefined) names.push(chain[wordIdx[i]].name);
+        return names.join(", ");
+    }
 
     function finish() {
         if (finished) return;
         finished = true;
-        var song = dmsPick(ctx, results);
-        if (song) ctx.log("lyrics: " + (song.providerName || "unknown provider") + " won the race"
-                          + (song.wordSync ? " (word-level)" : ""));
-        else ctx.log("lyrics: no provider had synced lyrics");
-        cb(song || null);
+        winner = dmsPick(ctx, results) || null;
+        if (winner) ctx.log("lyrics: " + (winner.providerName || "unknown provider")
+                            + " won the race" + (winner.wordSync ? " (word-level)" : ""));
+        else ctx.log("lyrics: no provider had synced lyrics yet");
+        if ((!winner || winner.wordSync !== true) && pendingWordNames() !== "")
+            ctx.log("lyrics: line-level winner while word providers are still racing ("
+                    + pendingWordNames() + "); will upgrade if one answers word-level");
+        retryFailedWordProviders();
+        cb(winner);
     }
 
     function maybeFinish() {
@@ -817,11 +836,67 @@ function fetchAll(ctx, cb) {
         if (foundCount > 0 && Date.now() - firstFoundAt >= DMS_SYNC_GRACE_MS) finish();
     }
 
+    // Word providers that came back empty get exactly one retry when the
+    // winner is only line-level: transient TLS/DNS hiccups must not silently
+    // downgrade the track to plain lines for good.
+    function retryFailedWordProviders() {
+        if (retried || (winner && winner.wordSync === true)) return;
+        var failed = [];
+        for (var i = 0; i < wordIdx.length; i++)
+            if (results[wordIdx[i]] === null) failed.push(wordIdx[i]);
+        if (failed.length === 0) return;
+        retried = true;
+        ctx.later(600, function () {
+            if (closed || ctx.isStale() || (winner && winner.wordSync === true)) return;
+            for (var r = 0; r < failed.length; r++) {
+                (function (idx) {
+                    ctx.log("lyrics: retrying " + chain[idx].name);
+                    try {
+                        chain[idx].fetch(ctx, function (song) { got(idx, song); });
+                    } catch (e) {
+                        ctx.log("lyrics: " + chain[idx].name + " retry failed: " + e);
+                    }
+                })(failed[r]);
+            }
+        });
+    }
+
+    // Late answers may only improve the result: a plausible word-level song
+    // replaces line-level lyrics, any plausible song fills an empty slot.
+    // Everything else is logged and dropped, never a downgrade.
+    function tryUpgrade(idx, song) {
+        if (closed || !song || !song.lines || song.lines.length === 0) return;
+        var name = song.providerName || chain[idx].name;
+        if (winner && winner.wordSync === true) {
+            ctx.log("lyrics: late " + name + " answer dropped (word-level already active)");
+            return;
+        }
+        if (dmsProblemWith(ctx, song) !== "") {
+            ctx.log("lyrics: late " + name + " answer rejected (timed for another cut)");
+            return;
+        }
+        if (winner && song.wordSync !== true) {
+            ctx.log("lyrics: late " + name + " answer dropped (line-level, not an upgrade)");
+            return;
+        }
+        ctx.log("lyrics: upgraded to " + name + (song.wordSync ? " (word-level)" : ""));
+        winner = song;
+        cb(song);
+    }
+
     function got(idx, song) {
-        if (finished || ctx.isStale()) return;
+        if (closed || ctx.isStale()) return;
         // stamp the winner's source so the UI can credit it ("Lyrics from X")
         if (song && song.lines && song.lines.length > 0 && !song.providerName)
             song.providerName = chain[idx].name;
+        if (finished) {
+            if (song && song.lines && song.lines.length > 0)
+                ctx.log("lyrics: late answer from " + chain[idx].name
+                        + " (" + song.lines.length + " lines"
+                        + (song.wordSync ? ", word-level" : "") + ")");
+            tryUpgrade(idx, song);
+            return;
+        }
         results[idx] = song;
         answered++;
         if (song && song.lines && song.lines.length > 0) {
@@ -851,6 +926,10 @@ function fetchAll(ctx, cb) {
             }
         })(r);
     }
-    if (ctx.later) ctx.later(DMS_LOOKUP_TIMEOUT_MS, finish);
+    // The lookup deadline only closes the upgrade window now; dmsPick already
+    // ran at finish(). Late answers past this point are ignored.
+    if (ctx.later) ctx.later(DMS_LOOKUP_TIMEOUT_MS, function () {
+        closed = true;
+    });
     else maybeFinish();
 }
