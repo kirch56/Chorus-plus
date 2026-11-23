@@ -1224,9 +1224,9 @@ PlasmoidItem {
                 // the clock itself so the transcript cannot get stuck on an
                 // old centre row.
                 var nextCentre = ts.centreFor(at);
-                if (ts.following && nextCentre !== ts.centre) {
+                if (nextCentre !== ts.centre) {
                     ts.centre = nextCentre;
-                    ts.requestFollow(true);
+                    if (ts.following) ts.requestFollow(true);
                 }
             }
         }
