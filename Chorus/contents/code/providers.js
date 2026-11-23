@@ -1264,7 +1264,8 @@ function dmsMetadataProblem(ctx, song) {
     if (!song) return "missing";
     var durationVerified = ctx.durS > 0 && song.durMs > 0
             && dmsProblemWith(ctx, song) === "";
-    if (song.durMs > 0 && !durationVerified) return "duration mismatch";
+    if (ctx.durS > 0 && song.durMs > 0 && !durationVerified)
+        return "duration mismatch";
     if (song.matchArtist && ctx.artist
             && !dmsArtistCompatible(ctx.artist, song.matchArtist)) return "artist mismatch";
     if (song.matchTitle && ctx.title && !dmsTitlesEquivalent(ctx.title, song.matchTitle)
