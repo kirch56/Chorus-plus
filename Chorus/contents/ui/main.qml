@@ -1485,9 +1485,9 @@ PlasmoidItem {
                 // changing contentY, preventing Flickable's native scrolling.
                 target: null
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                onWheel: {
+                onWheel: function (event) {
                     ts.browse();
-                    wheel.accepted = false;
+                    event.accepted = false;
                 }
             }
         }
